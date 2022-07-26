@@ -1,0 +1,190 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+my ($config)        = @ARGV;
+
+my  %metadata       = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/assembly};
+
+my  $metaspades     =  qq{$project_home/metaspades};
+my  $runs           =  qq{$project_home/runs};
+my  $contigs        =  qq{$project_home/contigs};
+my  $report         =  qq{$project_home/report};
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $trimming       =  (-e qq{$metadata{project_home}/$metadata{project_id}/bmtagger} ) ? 'bmtagger' : 'trimming';
+my  $datasets       =  qq{$metadata{project_home}/$metadata{project_id}/$trimming/reads};
+
+if(!-e $datasets){
+    print STDERR "[ERR]: please provide sequence for assembly! ;\n";
+    exit;
+}
+
+my  @samples_t      =  ();
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+exit;
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    metaspades_run();
+    metaquast_run();
+
+}
+
+sub profiling {
+
+    open( PROFILE,  $config )  || die "[ERR]: can't open $config $!\n";
+    while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+
+    } 
+    close PROFILE;
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}})  || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+        
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;
+        push @samples_t , $its[0];
+        
+    }
+    close PROFILE;
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $report
+                          $runs
+                          $metaspades
+                          $contigs};      
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub metaspades_run {
+
+    my $sh  =  qq{$runs/assembly.sh};   
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  metaspades( $sample );
+        print EXPORT  filter( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p 1 "{}"} if(!$dry_run);
+}
+
+sub metaspades {
+
+    my $sample  =  shift;
+    my $memory  = (exists $metadata{memory}) ? $metadata{memory} : 30;
+    my $threads = (exists $metadata{metaspades_threads}) ? $metadata{metaspades_threads} : 4;
+    my $para    = (exists $metadata{metaspades_para}) ?  $metadata{metaspades_para} : 
+                                                        "  ";
+    my $cmd     = qq{spades.py                              \
+                        --meta                              \
+                        -m  $memory                         \
+                        -t  $threads                        \
+                        -o  $metaspades/$sample             \
+                            $para                           \
+                        -1  $datasets/$sample.R1.fastq      \
+                        -2  $datasets/$sample.R2.fastq ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg;
+   return $cmd;
+
+}
+
+sub filter {
+
+    my $sample  = shift;
+    my $para    = $metadata{exists $metadata{min_contig_length}} ? $metadata{min_contig_length} : 200;
+    
+    my $cmd     = qq{$binaries/seqtk seq         \
+                       -L $para                 \
+                       $metaspades/$sample/scaffolds.fasta  \
+                    |$binaries/seqtk rename     \
+                       - $sample\_              \
+                    >$contigs/$sample.fasta ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub metaquast_run {
+
+    my $sh = qq{$runs/metaquast.sh};
+    open(EXPORT, qq{>$sh})|| die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT metaquast();
+    print EXPORT metrics();
+
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p 1 "{}"} if(!$dry_run);
+
+}
+
+sub metaquast {
+
+    my ($list, $labels) = labels();
+    
+    my $cmd = qq{quast.py                  \
+                    -t $metadata{cpus}     \
+                    -l "$labels"           \
+                    -o $report/quast       \
+                     $list ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub labels {
+
+    my @t      = ();
+    my @labels = ();
+    
+    foreach my $sample ( @samples_t ) {
+        push @t, qq{$contigs/$sample.fasta};
+        push @labels, $sample;
+    }
+
+    return (join(" ", @t), join(", ", @labels)); 
+
+}
+
+sub metrics {
+
+    my $cmd = qq{$utils/quast_metics                 \
+                    $report/quast/report.tsv         \
+                |$binaries/tsv-utils view -c -       \
+                >$report/metaquast.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}

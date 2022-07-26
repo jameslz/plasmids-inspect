@@ -1,0 +1,72 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "Usage:perl $0 <samples>  <fqchk>" if(@ARGV != 2);
+
+my ($samples, $fqchk )         = @ARGV;
+
+my  @samples_t = ();
+my  %fqchk_h   = ();
+
+load_sample();
+stats_run();
+print_stats();
+
+exit;
+
+sub load_sample {
+
+    open (DATA, $samples)   || die "$!  \n";
+    while (<DATA>) {        
+        chomp;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0]; 
+    }
+    close DATA;
+  
+}
+
+sub stats_run {
+
+    foreach my $sample (@samples_t) {
+        foreach my $orig (qw/R1 R2/) {
+            stats($sample, $orig);
+        }
+    }
+
+}
+
+sub stats {
+    
+    my ($sample, $orig) = @_;
+    
+    my $fh = qq{$fqchk/$sample.$orig.tsv};
+    open (DATA, $fh)   || die "$!  $fh\n";
+    
+    my $stats = <DATA>;
+    $stats =~s/\S+:\s+//g;
+    $stats =~s/;\s*/\t/g;
+    $stats =~s/\s+$//;
+    $fqchk_h{ $sample }{ $orig } = $stats;
+    
+    close DATA;
+    
+}
+
+sub print_stats{
+
+    print qq{#\tR1\t\t\t\t\t\t\tR2\t\t\t\t\t\t\n};
+    print qq{#sample\tsequence\tbase\tmin_len\tmax_len\tavg_len\tQ20\tQ30\tsequence\tbase\tmin_len\tmax_len\tavg_len\tQ20\tQ30\n};
+
+    foreach my $sample (@samples_t) {
+        print $sample;
+        foreach my $orig (qw/R1 R2/) {
+            print qq{\t$fqchk_h{$sample}{$orig}};
+        }
+        print "\n";
+    }    
+
+}

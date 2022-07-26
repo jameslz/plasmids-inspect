@@ -1,0 +1,155 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+use Getopt::Std;
+use Switch;
+
+die "Usage:perl $0 <metadata>" if(-t STDIN && @ARGV != 1);
+
+my ($config)        = @ARGV;
+
+my  %metadata       = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/diversity};
+my  $stats          =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/taxonomy/stats};
+
+if(!-e $stats){
+    print STDERR "[ERR]: no result for $stats;\n";
+    exit;
+}
+
+my  $barplot        =  qq{$project_home/barplot};
+my  $heatmap        =  qq{$project_home/heatmap};
+my  $runs           =  qq{$project_home/runs};
+
+my  @samples_t      = ();
+my  @taxon_t        = qw/phylum order class family genus species/;
+my  %rank_h         = qw/phylum 10 class 15 order 20 family 25 genus 30  species 30/;
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub submit {
+
+    make_fs();
+    barplot_run();
+    heatmap_run();
+
+}
+
+sub profiling {
+
+    open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+
+    }
+    close PROFILE;
+
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $runs
+                          $barplot
+                          $heatmap};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+}
+
+sub barplot_run {
+
+    my $sh = qq{$runs/barplot.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $level ( @taxon_t ) {
+        
+        print EXPORT rank( $level );
+        print EXPORT barplot( $level );
+        print EXPORT pdf2png( qq{ $barplot/$level.$rank_h{$level}.pdf} );
+    
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 3 -p $metadata{parallel} "{}"\n} if(!$dry_run);
+
+}
+
+sub rank {
+
+    my $level   = shift;
+    
+    my $cmd     = qq{$binaries/atlas-utils rank             \
+                     -r $rank_h{$level}  -m  -a             \
+                     $stats/$level.abundance.txt            \
+                 >$barplot/$level.$rank_h{$level}.abundance.txt ;\n};
+       $cmd      =~ s/\s+\n\s+/ /msg;
+    return $cmd; 
+
+}
+
+sub barplot {
+
+    my $level   = shift;
+    
+    my $cmd     = qq{$utils/barplot.R                                    \
+                        $barplot/$level.$rank_h{$level}.abundance.txt    \
+                        $barplot/$level.$rank_h{$level}.pdf              \
+                        $level ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd; 
+
+}
+
+sub heatmap_run {
+
+    my $sh = qq{$runs/heatmap.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $level ( @taxon_t ) {
+        print EXPORT heatmap( $level );
+        print EXPORT pdf2png( qq{$heatmap/$level.$rank_h{$level}.pdf} );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 2 -p $metadata{parallel} "{}"\n} if(!$dry_run);
+
+}
+
+sub heatmap {
+
+    my $level = shift;
+
+    my $cmd = qq{$utils/heatmap.R                                   \
+                    $barplot/$level.$rank_h{$level}.abundance.txt   \
+                    $heatmap/$level.$rank_h{$level}.pdf             \
+                    $level ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd; 
+
+}
+
+sub pdf2png {
+
+    my $pdf = shift;
+    
+    my $cmd = qq{$utils/pdf2png $pdf \n};
+    return $cmd;
+
+}

@@ -1,0 +1,93 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "Usage:perl $0 <samples> <stats> <bmtagger>" if(@ARGV != 3);
+
+my ($samples, $stats, $bmtagger )         = @ARGV;
+
+my  @samples_t = ();
+my  %stats_h   = ();
+
+load_sample();
+load_qstats();
+load_counts();
+load_contam();
+print_stats();
+
+exit;
+
+sub load_sample {
+
+    open (DATA, $samples)   || die "[ERR]: can't open file $samples $!  \n";
+    while (<DATA>) {
+        chomp;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+    }
+    close DATA;
+
+}
+
+sub load_qstats {
+
+    open (DATA, $stats) || die "[ERR]: can't open file $stats $!  \n";
+    while (<DATA>) {
+        
+        $_=~s/\s+$//;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        $stats_h{ $its[0] }{raw} = $its[1]; 
+    
+    }
+    close DATA;
+
+}
+
+sub load_counts {
+
+    open (DATA, qq{$bmtagger/bmtagger.clean.txt})   || die "[ERR]: can't open file $bmtagger/bmtagger.clean.txt $!  \n";
+    while (<DATA>) {
+        
+        $_=~s/\s+$//;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        $stats_h{ $its[0] }{cnt}{reads} = $its[1]/2; 
+        $stats_h{ $its[0] }{cnt}{base}  = $its[2]; 
+
+    }
+    close DATA;    
+}
+
+sub load_contam {
+
+    open (DATA, qq{$bmtagger/bmtagger.contam.txt})   || die "[ERR]: can't open file $bmtagger/bmtagger.contam.txt $!  \n";
+    while (<DATA>) {
+
+        $_=~s/\s+$//;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        $stats_h{ $its[0] }{contam}{reads} = $its[1]/2; 
+        $stats_h{ $its[0] }{contam}{base}  = $its[2]; 
+
+    }
+    close DATA;
+}
+
+sub print_stats {
+
+    print qq{#sample\traw reads\tclean reads\tclean bases\tcontaminant reads\tcontaminant bases\tclean reads(%)\tcontaminants reads(%)\n};
+    foreach my $sample (@samples_t) {
+        printf qq{%s\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\n}, ($sample, 
+                                                             $stats_h{$sample}{raw},
+                                                             $stats_h{$sample}{cnt}{reads},
+                                                             $stats_h{$sample}{cnt}{base},
+                                                             $stats_h{$sample}{contam}{reads},
+                                                             $stats_h{$sample}{contam}{base},                                             
+                                                             100 * $stats_h{$sample}{cnt}{reads}/$stats_h{$sample}{raw},
+                                                             100 * $stats_h{$sample}{contam}{reads}/$stats_h{$sample}{raw});
+    }
+
+}

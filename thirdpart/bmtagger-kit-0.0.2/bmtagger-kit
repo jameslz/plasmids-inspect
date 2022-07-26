@@ -1,0 +1,204 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Getopt::Std;
+use File::Basename;
+use Cwd 'abs_path';
+
+my $version = "0.0.2";
+
+my %opts = (c =>'40',
+            d=>'/biostack/database/bmtagger/hg38/hg38',
+            l=>'sample');
+getopts('c:d:l:', \%opts);
+&usage if (-t STDIN && @ARGV != 3);
+
+my ( $fwd, $rev, $project ) = @ARGV;
+
+my  $partition           =  qq{$project/partition};
+my  $reads               =  qq{$project/reads};
+my  $report              =  qq{$project/report};
+my  $runs                =  qq{$project/runs};
+
+my  $binaries            =  dirname( abs_path($0) ) . '/binaries';
+my  $batch               =  10;
+
+my  $db                  = $opts{d};
+my  $cpus                = $opts{c};
+my  $label               = $opts{l};
+
+submit();
+
+exit;
+
+sub submit {
+    
+    make_fs();
+    bm_map();
+    bm_reduce();
+    bm_contam();
+    bm_stats();
+    auxiliary_run();
+
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $partition   \
+                          $reads       \
+                          $report      \
+                          $runs};
+       $cmd  =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub bm_map {
+  
+      partition($fwd, 'R1');
+      partition($rev, 'R2');
+
+      my $sh = qq{$runs/$label.map.sh};
+      open (EXPORT, ">$sh") || die "$sh $!\n";
+
+      foreach my $idx ( 1 .. $batch ){
+          print EXPORT  qq{mkdir -p $partition/$label\_$idx\_tmp ;\n};
+          print EXPORT  bmtagger( $idx );
+      }
+      close EXPORT;
+      
+      system qq{cat $sh | $binaries/gargs -nlines 2 -p $cpus  "{}"\n};
+
+}
+
+sub partition {
+
+    my ($seq, $type) = @_;
+        $batch = `$binaries/fastx-utils partition -t fastq $seq $cpus $partition/$label\_$type`;
+
+}
+
+sub bmtagger {
+        
+    my $idx    =  shift;
+    my $cmd    = qq{bmtagger.sh                                  \
+                        -q 1                                     \
+                        -1 $partition/$label\_R1\_$idx.fastq     \
+                        -2 $partition/$label\_R2\_$idx.fastq     \
+                        -T $partition/$label\_$idx\_tmp          \
+                        --extract -b $db.bitmask                 \
+                        -x $db.srprism                           \
+                        -o $partition/$label\_$idx               \
+                        &> $partition/$label\_$idx.log;\n};
+        $cmd  =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub bm_reduce {
+  
+    my $sh = qq{$runs/$label.reduce.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $idx ( 1 .. $batch ){
+        print EXPORT qq{cat $partition/$label\_$idx.log      >>$reads/$label.log ;\n};
+        print EXPORT qq{cat $partition/$label\_$idx\_1.fastq >>$reads/$label.R1.fastq ;\n};
+        print EXPORT qq{cat $partition/$label\_$idx\_2.fastq >>$reads/$label.R2.fastq ;\n};
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -nlines 1 -p 1  "{}"\n};
+
+}
+
+sub bm_contam {
+
+  my $sh = qq{$runs/$label.contam.sh};
+  open (EXPORT, ">$sh") || die "$sh $!\n";
+
+  print EXPORT subseq($fwd, 'R1');
+  print EXPORT subseq($rev, 'R2');
+
+  close EXPORT;
+  system qq{cat $sh | $binaries/gargs -nlines 1 -p 1  "{}"\n};
+
+}
+
+sub subseq {
+
+    my ($seq, $strand) = @_;
+    my $cmd = qq{$binaries/fastx-utils view $reads/$label.$strand.fastq   \
+                |$binaries/fastx-utils subseq -s  $seq  -                 \
+                >$reads/$label.contam.$strand.fastq ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub bm_stats {
+
+  my $sh = qq{$runs/$label.stats.sh};
+  open (EXPORT, ">$sh") || die "$sh $!\n";
+
+  foreach my $type (qw/- contam/) {
+      foreach my $strand (qw/R1 R2/) {
+          print EXPORT counts($type, $strand);
+      }
+  }
+
+  close EXPORT;
+  system qq{cat $sh | $binaries/gargs -nlines 1 -p 1  "{}"\n};
+
+}
+
+sub counts  {
+
+    my ($type, $strand) = @_;
+
+    my $cmd = "";
+    
+    if( $type eq 'contam'){
+        $cmd    = qq{$binaries/fastx-utils counts           \
+                      $reads/$label.$type.$strand.fastq     \
+                      -b                                    \
+                    > $report/$label.$type.$strand.counts ;\n};
+    }else{
+        $cmd    = qq{$binaries/fastx-utils counts           \
+                      $reads/$label.$strand.fastq           \
+                      -b                                    \
+                    > $report/$label.$strand.counts ;\n};
+    }
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub auxiliary_run {
+
+    my $sh    =  qq{$runs/auxiliary.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    printf EXPORT qq{rm -rf  $partition\n};
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub usage {
+
+  printf STDERR qq(
+
+Program: bmtagger-kit: remove host reads pipeline
+Version: $version
+Contact: ZHANG LEI <zhanglei\@logicinformatics.com>\n
+Usage:   bmtagger-kit [options]  <fwd> <rev>  <project>\n
+Options: -c INT    CPU number, default: [40]
+         -s STR    specify sample label. default: [sample]
+         -d STR    specify database location. default: [/biostack/database/bmtagger/hg19/hg19]
+
+);
+  exit;
+
+}

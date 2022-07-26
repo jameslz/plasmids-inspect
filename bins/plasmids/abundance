@@ -1,0 +1,392 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+use Getopt::Std;
+use Switch;
+
+die "Usage:perl $0 <metadata>" if(-t STDIN && @ARGV != 1);
+
+my ($config)        = @ARGV;
+my %metadata        = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/abundance};
+
+my  $matrix         =  qq{$project_home/matrix};
+my  $lollipop       =  qq{$project_home/lollipop};
+my  $stats          =  qq{$project_home/stats};
+my  $mdr            =  qq{$project_home/mdr};
+my  $barplot        =  qq{$project_home/barplot};
+my  $heatmap        =  qq{$project_home/heatmap};
+
+my  $runs           =  qq{$project_home/runs};
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $refseq         =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/refseq};
+my  $quant          =  qq{$metadata{project_home}/$metadata{project_id}/annotation/coverage/report};
+
+my  %catalog_h      = ();
+my  @samples_t      = (); 
+my  @taxon_t        = qw/phylum order class family genus species/;
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+exit;
+
+sub submit {
+    
+    mapping_file();
+    make_fs();
+    bins_run();
+    melt_run();
+    abundance_run();
+    
+    lollipop_run();
+    
+    if(scalar @samples_t >= 4){
+        metadata_run();
+        mdr_run();
+    }
+
+    barplot_run();
+    heatmap_run();
+
+}
+
+sub profiling{
+
+    open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key,  $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+
+    } 
+    close PROFILE;
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}})  || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+      
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/, $_;
+        push @samples_t, $its[0];
+        $catalog_h{ $its[2] } = ();
+
+    }
+    close PROFILE;
+
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $matrix
+                          $runs
+                          $stats/bins
+                          $lollipop
+                          $mdr
+                          $heatmap
+                          $barplot};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub bins_run {
+
+    my $sh    =  qq{$runs/melt.sh};
+    open (EXPORT, qq{>$sh}) || die "$sh $!\n";
+
+    foreach my $sample (@samples_t) {
+       print EXPORT qq{mkdir -p $stats/$sample ;\n};
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 2 -p $metadata{cpus} "{}"} if(!$dry_run);
+
+}
+
+sub melt_run {
+
+    my $sh    =  qq{$runs/melt.sh};
+    open (EXPORT, qq{>$sh}) || die "$sh $!\n";
+
+    foreach my $sample (@samples_t) {
+       foreach my $level ( @taxon_t ) {
+            foreach my $type (qw/counts tpm/) {
+                print EXPORT melt( $sample, $level, $type );
+            }
+       }
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p $metadata{cpus} "{}"} if(!$dry_run);
+
+}
+
+sub melt {
+
+    my ($sample, $level, $type) = @_;
+    my $c = ($type eq "counts") ? 3 : 4;
+    my $cmd = qq{cut -f 1,$c                         \
+                    $quant/$sample.txt               \
+                |$binaries/tsv-utils melt            \
+                    -d ','                           \
+                $refseq/bins/$sample.$level.bins.txt \
+                    -                                \
+                >$stats/$sample/$level.$type.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub abundance_run {
+
+    my $sh    =  qq{$runs/abundance.sh};
+    open (EXPORT, qq{>$sh}) || die "$sh $!\n";
+      
+    foreach my $level ( @taxon_t ) {
+        foreach my $type (qw/counts tpm/) {
+            print EXPORT agg( $level, $type );
+        }
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p 1 "{}"} if(!$dry_run);
+
+}
+
+sub agg {
+
+    my $level = shift;
+    my $type     = shift;
+    my @t        = map{ qq{$_:$stats/$_/$level.$type.txt} } @samples_t;
+    my $list     = join(" ", @t);
+    my $cmd  = qq{$binaries/tsv-utils agg       \
+                     -p 0                       \
+                     $list                      \
+                  >$matrix/$level.$type.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+}
+
+sub lollipop_run {
+
+    my $sh    =  qq{$runs/lollipop.sh};
+    open (EXPORT, qq{>$sh}) || die "$sh $!\n";
+
+    foreach my $sample (@samples_t) {
+       foreach my $level ( @taxon_t ) {
+           print EXPORT qq{mkdir -p $lollipop/$sample ;\n};
+           print EXPORT rank( $sample, $level );
+           print EXPORT lollipop( $sample, $level );
+           print EXPORT qq{$utils/pdf2png $lollipop/$sample/$level.pdf ;\n};
+       }
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 4 -p $metadata{cpus} "{}"} if(!$dry_run);
+
+}
+
+sub rank {
+    
+    my ($sample, $level)  =  @_;
+    my $cmd  = qq{$binaries/tsv-utils  rank             \
+                       -r 12                            \
+                      $stats/$sample/$level.tpm.txt     \
+                   |grep -v "#"                         \
+                   |$binaries/tsv-utils add_headline    \
+                     \"level\\tabundance\"              \
+                     -                                  \
+                  >$lollipop/$sample/$level.txt ;\n};
+       $cmd  =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub lollipop {
+    
+    my ($sample, $level)  =  @_;
+    my $cmd  = qq{$utils/lollipop.R                     \
+                      $lollipop/$sample/$level.txt      \
+                      $lollipop/$sample/$level.pdf      \
+                      $level ;\n};
+       $cmd  =~ s/\s+\n\s+/ /msg;
+   return $cmd;
+
+}
+
+sub metadata_run {
+    
+    my $sh = qq{$runs/metadata.sh};
+    open(EXPORT, qq{>$sh} ) || die "$!";
+    print EXPORT qq{$binaries/tsv-utils strip $metadata{mapping_file}| cut -f1,3 | grep -v '#' >$mdr/metadata.txt;\n};
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p 1 "{}"\n} if(!$dry_run);
+
+}
+
+sub mdr_run {
+    
+    my $sh = qq{$runs/mdr.sh};
+    open(EXPORT, qq{>$sh} ) || die "$!";
+    
+    foreach my $level ( @taxon_t ) {
+         print EXPORT qq{mkdir -p $mdr/$level ;\n};
+         print EXPORT pca( $level );
+         print EXPORT pdf2png('pca', $level);
+         print EXPORT pcoa( $level );
+         print EXPORT pdf2png('pcoa', $level);
+         print EXPORT nmds( $level );
+         print EXPORT pdf2png('nmds', $level);
+
+    }
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 7 -p $metadata{parallel} "{}"\n} if(!$dry_run);
+
+}
+
+sub pdf2png {
+
+   my ($type, $level) = @_;
+   my $cmd  = qq{$utils/pdf2png \
+                   $mdr/$level/$level.$type.pdf ;\n};
+      $cmd =~ s/\s+\n\s+/ /msg;
+  return $cmd; 
+
+}
+
+sub pca {
+
+    my $level        = shift;
+    my $ellipse_para =  ( (scalar @samples_t) ne (scalar keys %catalog_h) ) ? '-g T' : " ";
+    my $text_para    =  (exists $metadata{text} && $metadata{text} eq 'T') ? "-t T" : " ";
+    my $cmd     = qq{$utils/PCA.R                    \
+                        $ellipse_para                \
+                        $text_para                   \
+                        $matrix/$level.tpm.txt       \
+                        $mdr/metadata.txt            \
+                        $mdr/$level/$level.pca.pdf;\n};
+        $cmd =~ s/\s+\n\s+/ /msg;
+     return $cmd; 
+
+}
+
+sub pcoa {
+
+    my $level        = shift;
+    my $ellipse_para =  ( (scalar @samples_t) ne (scalar keys %catalog_h) ) ? '-g T' : " ";
+    my $text_para    =  (exists $metadata{text} && $metadata{text} eq 'T') ? "-t T" : " ";
+    my $method       =  (exists $metadata{vegdist}) ? $metadata{vegdist} : "bray";
+    my $cmd     = qq{$utils/PCoA.R                      \
+                        $ellipse_para                   \
+                        $text_para                      \
+                        -m $method                      \
+                        $matrix/$level.tpm.txt          \
+                        $mdr/metadata.txt               \
+                        $mdr/$level/$level.pcoa.pdf;\n};
+        $cmd =~ s/\s+\n\s+/ /msg;
+     return $cmd; 
+
+}
+
+sub nmds {
+
+    my $level     = shift;
+    my $ellipse_para =  ( (scalar @samples_t) ne (scalar keys %catalog_h) ) ? '-g T' : " ";
+    my $text_para    =  (exists $metadata{text} && $metadata{text} eq 'T') ? "-t T" : " ";
+    my $method       =  (exists $metadata{vegdist}) ? $metadata{vegdist} : "bray";
+    my $cmd     = qq{$utils/NMDS.R                      \
+                        $ellipse_para                   \
+                        $text_para                      \
+                        -m $method                      \
+                        $matrix/$level.tpm.txt          \
+                        $mdr/metadata.txt               \
+                        $mdr/$level/$level.nmds.pdf;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+     return $cmd; 
+
+}
+
+sub barplot_run {
+
+    my $sh = qq{$runs/barplot.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+    
+    foreach my $level  ( @taxon_t ) {
+        print EXPORT ntop( $level );
+        print EXPORT barplot( $level );
+    	print EXPORT qq{$utils/pdf2png $barplot/$level.pdf;\n};
+    }
+    
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p 1 "{}"\n} if(!$dry_run);
+
+}
+
+sub ntop {
+
+    my $level = shift;
+    my $cmd   = qq{$binaries/tsv-utils rank                \
+                       -r 12                               \
+                       $matrix/$level.tpm.txt              \
+                   >$barplot/$level.txt ;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub barplot {
+
+    my $level = shift;
+    my $cmd   = qq{$utils/stacks.R                         \
+                     $barplot/$level.txt                   \
+                     $barplot/$level.pdf                   \
+                     $level ;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub heatmap_run {
+
+    my $sh    =  qq{$runs/heatmap.sh};
+    open (EXPORT, qq{>$sh}) || die "$sh $!\n";
+      
+    foreach my $level ( @taxon_t ) {
+        print EXPORT  heatmap( $level );
+        print EXPORT  qq{$utils/pdf2png $heatmap/$level.pdf;\n};
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p 1 "{}"} if(!$dry_run);
+
+}
+
+sub heatmap {
+ 
+    my $level = shift;
+    my $cmd  = qq{$utils/heatmap.R                \
+                    $barplot/$level.txt        \
+                    $heatmap/$level.pdf        \
+                    $level; \n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}

@@ -1,0 +1,80 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Switch;
+
+die "Usage:perl $0 <samples>  <data_analysis>" if(@ARGV != 2);
+
+my ($samples, $data_analysis )         = @ARGV;
+
+my  @samples_t = ();
+my  %stats_h   = ();
+
+load_sample();
+stats();
+print_stats();
+
+exit;
+
+sub load_sample {
+
+    open (DATA, $samples)   || die "$!  \n";
+    while (<DATA>) {
+        
+        chomp;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+
+    }
+    close DATA;
+}
+
+sub stats{
+
+    foreach my $metric (qw/evaluation trimming bmtagger sortmerna/) {
+        my $fp = qq{$data_analysis/$metric/report/sample.stats.txt};
+
+        load_stats($fp, $metric);
+    
+    }
+}
+
+sub load_stats{
+
+    my ($stats, $key)  = @_;
+    open (DATA, $stats )   || die "can't locate $stats $! \n";
+    while (<DATA>) {
+        chomp;
+        next if(/^#/);
+        my @its = split /\t/, $_;
+        
+        switch($key){
+            case 'evaluation' { $stats_h{ $its[0] }{ $key } =  $its[1] . "\t" . ( $its[2] + $its[9]) }
+            case 'trimming'  { $stats_h{ $its[0] }{ $key } =  $its[1] . "\t" . ( $its[2] + $its[9]) }
+            case 'bmtagger'  { $stats_h{ $its[0] }{ $key } =  join("\t", @its[2..5]); }
+            case 'sortmerna' { $stats_h{ $its[0] }{ $key } =  $its[2] }
+        }
+        
+    }
+    local $/= "\n";
+    close DATA;
+
+}
+
+sub print_stats{
+    
+    print qq{#SampleID\traw\t\ttrimming\t\tclean reads\t\tcontaminant\t\trRNA\n};       
+    print qq{#SampleID\treads\tbases\treads\tbases\treads\tbases\treads\tbases\treads\n};
+    
+    foreach my $sample (@samples_t) {
+        print qq{$sample};
+        foreach my $metric (qw/evaluation trimming bmtagger sortmerna/) {
+           print qq{\t$stats_h{$sample}{$metric}};
+        }
+        print qq{\n};
+    }
+}
+
+

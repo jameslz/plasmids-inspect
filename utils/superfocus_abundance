@@ -1,0 +1,76 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "Usage:perl $0  <mapping_file> <catalog> <extend>" if ( @ARGV != 3 );
+
+my ($mapping_file, $catalog, $extend) =  @ARGV;
+
+my @samples_t  = ();
+my %catalog    = ();
+
+my %feature_h  = ();
+my @feature_t  = (); 
+
+load_mapping_file();
+load_catalog();
+print_tab();
+
+
+sub load_mapping_file {
+
+    open (DATA,  $mapping_file ) || die "$!\n";
+    while (<DATA>) {
+        next if(/^#/);
+        my @its  = split /\t/, $_;
+        push @samples_t, $its[0];
+    }
+    close DATA; 
+
+}
+
+sub load_catalog{
+    
+    foreach my $sample (@samples_t) {
+        
+        my $f = qq{$catalog/$sample}. $extend;
+        if(-e $f){
+            open(DATA, $f) || die "$f $!";
+
+            foreach my $skip (1 .. 5) {
+                <DATA>;
+            }
+            
+            while (<DATA>) {
+                chomp;
+                
+                next if(/^#/);
+                $_=~s/^\s+//;
+
+                my @its  = split /\t/, $_;
+                push @feature_t, $its[0] if(! exists $feature_h{ $its[0] });
+                $feature_h{ $its[0] } = ();
+                $catalog{ $its[0]  }{ $sample } = $its[2];
+            }
+            close DATA;
+        }
+    }
+    close EXPORT;
+
+
+}
+
+sub print_tab {
+
+    print qq{#level\t}, join("\t", @samples_t), "\n";
+    foreach my $feature ( @feature_t ) {   
+        print  $feature;
+        foreach my $sample (@samples_t) {
+            my $value = (exists $catalog{$feature}{$sample}) ? $catalog{$feature}{$sample} : 0;
+            printf qq{\t%.3f}, $value;
+        }
+        print "\n";
+    }
+
+}

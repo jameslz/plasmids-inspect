@@ -1,0 +1,216 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ( $config )      = @ARGV;
+
+my %metadata        = ();
+profiling();
+
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/annotation/quant};
+
+my  $libs           =  qq{$project_home/libs};
+my  $runs           =  qq{$project_home/runs};
+my  $report         =  qq{$project_home/report};
+my  $bowtie2        =  qq{$project_home/bowtie2};
+
+my  $prodigal       =  qq{$metadata{project_home}/$metadata{project_id}/annotation/prodigal/orfs};
+
+my  $trimming       =  (-e qq{$metadata{project_home}/$metadata{project_id}/bmtagger} ) ? 'bmtagger' : 'trimming';
+my  $datasets       =  qq{$metadata{project_home}/$metadata{project_id}/$trimming/reads};
+
+my  @samples_t      = ();
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub submit {
+    
+    mapping_file();
+    make_fs();
+    build_run();
+    bowtie2_run();
+    auxiliary_run();
+
+}
+
+sub profiling {
+
+    open( PROFILE,  $config ) || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+
+    } 
+    close PROFILE;
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}}) || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;
+        push @samples_t, $its[0];
+
+    }
+    close PROFILE;
+    
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $report
+                          $runs
+                          $libs
+                          $bowtie2};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub build_run {
+
+    my $sh    =  qq{$runs/makedb.sh};
+     
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  build( $sample );
+    }
+
+    close EXPORT;
+     
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p $metadata{cpus}  "{}"} if(!$dry_run);
+}
+
+sub build {
+
+    my $sample  = shift; 
+    
+    my $cmd     = qq{bowtie2-build                      \
+                        --threads  $metadata{threads}   \
+                        $prodigal/$sample.fna           \
+                        $libs/$sample ;\n};
+      $cmd      =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub bowtie2_run {
+
+    my $sh    =  qq{$runs/bowtie2.sh};
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  qq{mkdir -p $bowtie2/$sample;\n};
+        print EXPORT  bowtie2( $sample );
+        print EXPORT  idxstats( $sample );
+        print EXPORT  tpm( $sample );
+        print EXPORT  abundance( $sample, 'counts' );
+        print EXPORT  abundance( $sample, 'abundance' );
+
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 1  -p  1 "{}"} if(!$dry_run);
+
+}
+
+sub bowtie2 {
+
+    my $sample  = shift;
+    
+    my $cmd     = qq{bowtie2                                   \
+                        --end-to-end                           \
+                        --sensitive                            \
+                        -I 200 -X 400                          \
+                        -t -p $metadata{cpus}                  \
+                        -x $libs/$sample                       \
+                        -1 $datasets/$sample.R1.fastq          \
+                        -2 $datasets/$sample.R2.fastq          \
+                        2>$bowtie2/$sample/$sample.log         \
+                    |$binaries/samtools view -bS               \
+                        -F4                                    \
+                        -\@$metadata{cpus}                     \
+                        -T $prodigal/$sample.fna -             \
+                    |$binaries/samtools sort                   \
+                        -\@$metadata{cpus}                     \
+                        -o $bowtie2/$sample/$sample.bam ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub idxstats {
+
+    my $sample  = shift;
+    
+    my $cmd     = qq{$binaries/samtools view                   \
+                        -h $bowtie2/$sample/$sample.bam        \
+                    |$binaries/quant-tk idxstats               \
+                        -                                      \
+                    >$bowtie2/$sample/$sample.txt ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub tpm {
+
+    my $sample  = shift;
+    
+    my $cmd     = qq{$binaries/quant-tk tpm                    \
+                        $bowtie2/$sample/$sample.txt           \
+                    >$report/$sample.txt ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub abundance {
+
+    my $sample  = shift;
+    my $type    = shift;
+    my $target  = ($type eq 'abundance') ? 4 : 3;
+
+    my $cmd     = qq{$binaries/tabtk cut -r            \
+                        -f1,$target                    \
+                        $report/$sample.txt            \
+                    >$report/$sample.$type.annotation.txt ;\n};
+       $cmd    =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub auxiliary_run {
+
+    my $sh    =  qq{$runs/auxiliary.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    printf EXPORT qq{rm -rf $libs;\n};
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}

@@ -1,0 +1,196 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Switch;
+use File::Basename;
+use Cwd 'abs_path';
+
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+my ( $config )      = @ARGV;
+
+my  %metadata       = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/plasmids};
+my  $annotate       =  qq{$project_home/profile};
+my  $report         =  qq{$annotate/report};
+my  $runs           =  qq{$annotate/runs};
+my  $stats          =  qq{$annotate/stats};
+
+my  $prodigal       =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/inspect/orfs};
+my  $refseq         =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/refseq/report};
+
+my  $coverage       =  qq{$metadata{project_home}/$metadata{project_id}/annotation/coverage/report};
+my  $quant          =  qq{$metadata{project_home}/$metadata{project_id}/annotation/quant/report};
+my  $card           =  qq{$metadata{project_home}/$metadata{project_id}/annotation/card/report};
+
+if(!-e $prodigal || !-e $coverage || !-e $quant || !-e $card){
+    printf STDERR qq{[ERR]: can't locate $prodigal | $coverage | $card | $quant path\n};
+    exit;
+}
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  @samples_t      = ();
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub profiling {
+
+    open( PROFILE,  $config ) || die "[ERR]: can't open $config. \n";
+    
+    while(<PROFILE>){
+          $_ =~ s/\s+$//;
+          next if(/^#/ || !/^\S+/);
+          my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+          next if($value eq '-');
+          $metadata{$key}  = $value;
+    } 
+    
+    close PROFILE;
+
+}
+
+sub mapping_file {
+    
+    open (PROFILE, qq{$metadata{mapping_file}}) || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    
+    while (<PROFILE>) {
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;    
+        push @samples_t , $its[0];
+    }
+    
+    close PROFILE;
+
+}
+
+sub submit {
+    
+    mapping_file();
+    make_fs();
+    melt_run();
+    contigs_run();
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $report
+                          $runs};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub melt_run {
+  
+    my $sh  = qq{$runs/melt.sh};     
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample (@samples_t) {  
+        print EXPORT card( $sample );
+        print EXPORT joint( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+ 
+}
+
+sub card {
+    
+    my $sample  = shift;   
+    my $cmd = qq{$binaries/tsv-utils cut -f4            \
+                    $prodigal/$sample.bed               \
+                |$binaries/tsv-utils subset             \
+                    -c1                                 \
+                    $card/$sample.card.annotation.txt   \
+                    -                                   \
+                |cut -f1,2,3                            \
+                >$card/$sample.plasmid.annotation.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub joint {
+    
+    my $sample  = shift;   
+    my $cmd     = qq{$binaries/fastx-utils view             \
+                        $prodigal/$sample.pep               \
+                    |$binaries/tsv-utils subset             \
+                        -c1                                 \
+                        $quant/$sample.abundance.annotation.txt \
+                        -                                   \
+                    |sed 's/tpm/orf_tpm/'                   \
+                    |$binaries/tsv-utils join               \
+                        -p "-"                              \
+                        -                                   \
+                    $card/$sample.plasmid.annotation.txt    \
+                    >$report/$sample.orf.annotation.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub contigs_run {
+  
+    my $sh = qq{$runs/contigs.sh};     
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample (@samples_t) {
+        print EXPORT association( $sample );
+        print EXPORT tsv2xlsx( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p  $metadata{cpus} "{}"\n} if(!$dry_run);
+ 
+}
+
+sub association {
+
+    my $sample = shift;
+    
+    my $cmd = qq{$binaries/tsv-utils annotation              \
+                    -c 1                                     \
+                    $coverage/$sample.txt                    \
+                    $prodigal/$sample.bed                    \
+                |$binaries/tsv-utils add_headline            \
+                    "#contig_id\\tstart\\tend\\torf_id\\tscore\\tstrand\\tcontig_length\\treads_counts\\tcontig_tpm" \
+                    -                                        \
+                |$binaries/tsv-utils annotation              \
+                    -c4                                      \
+                    $report/$sample.orf.annotation.txt       \
+                    -                                        \
+                |$binaries/tsv-utils annotation              \
+                    -c1                                      \
+                    $refseq/$sample.refseq.txt  -            \
+                >$report/$sample.contigs.annotation.txt;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+} 
+
+sub tsv2xlsx {
+    
+    my $sample = shift;
+    
+    my $cmd =  qq{$binaries/tsv-utils tsv2xlsx              \
+                    $report/$sample.orf.annotation.xlsx     \
+                    orfs:$report/$sample.orf.annotation.txt \
+                    contigs:$report/$sample.contigs.annotation.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+} 

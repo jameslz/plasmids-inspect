@@ -1,0 +1,213 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ( $config )           = @ARGV;
+
+my  %metadata            = ();
+profiling();
+
+my  $project_home        =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/inspect};
+
+my  $runs                =  qq{$project_home/runs};
+my  $report              =  qq{$project_home/report};
+my  $contigs             =  qq{$project_home/contigs};
+my  $orf                 =  qq{$project_home/orfs};
+
+my  $datasets            =  qq{$metadata{project_home}/$metadata{project_id}/plasmids};
+my  $prodigal            =  qq{$metadata{project_home}/$metadata{project_id}/annotation/prodigal/orfs};
+
+my  @samples_t           =  ();
+
+my  $utils               =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries            =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  @db_t                =  split /,/, $metadata{engines};
+my  $dry_run             =  0;
+    $dry_run             =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub profiling {
+
+    open( PROFILE,  $config )  || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+          
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    
+    } 
+    close PROFILE;
+
+    foreach my $db (qw/engines/) {
+        if(! exists $metadata{$db}){
+            print STDERR "[ERR]: please specify the $db metadata.\n";
+            exit;
+        }
+    }
+
+}
+
+sub submit {
+  
+    mapping_file();
+    make_fs();
+    inspect_run();
+    orf_run();
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}})   || die "[ERR]: can't open $metadata{mapping_file}. \n";
+    while (<PROFILE>) {
+    
+        chomp;
+        next if (/^#/);
+        my @its = split /\s+/,$_;
+        push @samples_t , $its[0];
+
+    }
+    close PROFILE;
+
+}
+
+sub make_fs {
+   
+    my $cmd = qq{mkdir -p $runs
+                          $contigs
+                          $orf
+                          $report};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub inspect_run {
+
+    my $sh    =  qq{$runs/inspect.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  inspect( $sample );
+        print EXPORT  plasmid_list ($sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 2 -p  $metadata{parallel} "{}"\n} if(!$dry_run);
+}
+
+sub inspect {
+     
+    my $sample  =  shift;
+    my $predict =  list( $sample );
+    
+    if( $predict eq "-1"){
+        print STDERR qq{[ERR]: skip plasmids inspect for sample: $sample. \n};
+        return ;
+    }
+
+    my $cmd     = qq{cat $predict                \
+                    |$binaries/fastx-utils dedup \
+                       -                         \
+                    >$contigs/$sample.fasta ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub list {
+
+    my $sample = shift;
+    my @list_t = ();
+    
+    foreach my $db ( @db_t ) {
+
+        my $fh = qq{$datasets/$db/contigs/$sample.fasta};
+        push @list_t, $fh if(-e $fh);
+        
+    }
+
+    if(@list_t < 1){
+        print STDERR qq{[ERR]: no predicted plasmids for $sample.\n};
+        return -1;
+    }else{
+        return join(" ", @list_t);
+    }
+
+}
+
+sub plasmid_list {
+
+    my $sample  = shift;
+    my $cmd     = qq{$binaries/fastx-utils view  \
+                     $contigs/$sample.fasta      \
+                    >$contigs/$sample.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+
+}
+
+sub orf_run {
+
+    my $sh    =  qq{$runs/orf.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample (@samples_t) {
+        
+        foreach my $type ( qw/gff gtf bed/ ){
+            print EXPORT  subset( $sample, $type );
+        }
+     
+        foreach my $type ( qw/pep fna/ ){
+            print EXPORT  subseq( $sample, $type );
+        }       
+
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 5 -p  $metadata{parallel} "{}"\n} if(!$dry_run);
+
+}
+
+sub subset {
+    
+    my $sample   = shift;
+    my $type     = shift;
+
+    my $cmd = qq{$binaries/tsv-utils subset      \
+                    -c 1                         \
+                    $prodigal/$sample.$type      \
+                    $contigs/$sample.txt         \
+                |grep -P -v ^"#"                 \
+                >$orf/$sample.$type; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub subseq {
+    
+    my $sample   = shift;
+    my $type     = shift;
+
+    my $cmd = qq{cut -f4 $orf/$sample.bed        \
+                |$binaries/fastx-utils subseq    \
+                    $prodigal/$sample.$type      \
+                    -                            \
+                >$orf/$sample.$type; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}

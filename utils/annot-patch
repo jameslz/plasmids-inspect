@@ -1,0 +1,37 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "\nUsage:annot-patch <tsv>  <label>\n\n" if(-t STDIN && @ARGV != 2);
+
+my ($tsv, $label) = @ARGV;
+
+
+label();
+
+
+sub label{
+
+    my $fh;
+    ($tsv eq "-") ? ($fh = 'STDIN') :
+                    (open( $fh,  $tsv )  || die "[ERR]: can't open file <$tsv>. \n");
+    
+    my $tilte = <$fh>;
+       $tilte =~s/\s+$//;
+
+    my @t = split /\t/, $tilte;
+
+    foreach my $e (1 .. $#t) {
+    	$t[ $e ] = $label . '__' . $t[ $e ];
+    }
+
+    print join("\t", @t) . "\n";
+    
+    while(<$fh>){
+    	print;
+    } 
+    close $fh;
+    
+
+}

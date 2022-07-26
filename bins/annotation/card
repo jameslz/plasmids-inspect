@@ -1,0 +1,399 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ( $config  )     = @ARGV;
+
+my  %metadata       = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/annotation/card};
+
+my  $alignment      =  qq{$project_home/alignment};
+my  $annotation     =  qq{$project_home/annotation};
+my  $stats          =  qq{$project_home/stats};
+my  $pies           =  qq{$project_home/pies};
+my  $stacks         =  qq{$project_home/stacks};
+my  $runs           =  qq{$project_home/runs};
+my  $report         =  qq{$project_home/report};
+my  $abundance      =  qq{$project_home/abundance};
+
+my  $datasets       =  qq{$metadata{project_home}/$metadata{project_id}/annotation/prodigal/orfs};
+my  $quant          =  qq{$metadata{project_home}/$metadata{project_id}/annotation/quant/report};
+
+if(! -e $quant){
+    print STDERR qq{[ERR]: can't locate ORF abundance. \n\n}; 
+    exit;
+}
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $pipe           =  dirname( abs_path($0) ) . '/../../thirdpart/card-kit-0.0.3/card-kit';
+my  @samples_t      =  ();
+my  @ontologies_t   =  qw/aro family drugs mechanism/;
+my  $rank           = (exists $metadata{rank_num}) ? $metadata{rank_num} : 10;
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+exit;
+
+sub profiling {
+
+    open( PROFILE,  $config ) || die "[ERR]: can't open $config $!\n";
+    while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    
+    } 
+    close PROFILE;
+    
+    foreach my $db (qw/card/) {      
+        if(! exists $metadata{$db}){
+            print STDERR "[ERR]: please specify the $db metadata.\n";
+            exit;
+        }
+    }
+
+}
+
+sub mapping_file {
+    
+    open (PROFILE, qq{$metadata{mapping_file}}) || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+      
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;    
+        push @samples_t , $its[0];
+    
+    }
+    close PROFILE;
+}
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    card_run();
+    pies_run();
+    stacks_run();
+    bins_run();
+    melt_run();
+
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $report
+                          $runs
+                          $annotation
+                          $alignment
+                          $abundance
+                          $stats
+                          $stacks
+                          $pies};
+
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub card_run {
+  
+    my $sh = qq{$runs/card.sh};     
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample (@samples_t) {  
+        print EXPORT  card( $sample );
+        print EXPORT  collapse( $sample );
+        print EXPORT  hits( $sample );
+        foreach my $ontology (@ontologies_t) {
+            print EXPORT bins( $sample, $ontology);
+        }
+        print EXPORT  abundance( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 1 -p 1 "{}" \n} if(!$dry_run);
+
+}
+
+sub card {
+        
+    my $sample  = shift;
+    my $para    = (exists $metadata{card_para}) ?  $metadata{card_para} :
+                                                "  -e 1e-10 --cov-mode 2  -c 0.7 --min-seq-id 0.8 ";
+
+    my $cmd     = qq{$pipe                         \
+                        -d $metadata{card}         \
+                        -p "$para"                 \
+                        -c $metadata{cpus}         \
+                            $datasets/$sample.pep  \
+                            $alignment/$sample ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg; 
+
+    return $cmd;
+
+}
+
+sub collapse {
+
+    my $sample  = shift;
+    
+    my $cmd     = qq{$binaries/tabtk cut                \
+                        -r -f1,2,3,4,5,6,7,15,16,17     \
+                        $alignment/$sample/report/annotation.txt   \
+                    |grep -v "#"                        \
+                    |$binaries/tsv-utils add_headline   \
+                        "#seqid\\tcard_annotation\\tcard_symbol\\tcard_family\\tcard_drugs\\tcard_mechanism\\tcard_identity\\tcard_evalue\\tcard_bitscore\\tcard_qcov"  \
+                        -                               \
+                    >$report/$sample.card.annotation.txt ;\n};
+
+        $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub hits {
+    
+    my $sample  = shift;
+    
+    my $cmd     =  qq{$binaries/tsv-utils uniq             \
+                       -i -f 1                             \
+                       $report/$sample.card.annotation.txt \
+                    |$binaries/tsv-utils nlines            \
+                       -a "card\\t$sample"                 \
+                        -                                  \
+                    >$report/$sample.card.stats.txt;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub bins {
+
+    my $sample  = shift;
+    my $ontology= shift;
+    
+    my $cmd     =  qq{cp $alignment/$sample/report/$ontology-bins.txt \
+                         $annotation/$sample.$ontology-bins.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub abundance {
+    
+    my $sample  =  shift;
+    
+    my $cmd     =  qq{cut -f1                                 \
+                        $report/$sample.card.annotation.txt   \
+                    |$binaries/tsv-utils  subset              \
+                        $quant/$sample.txt                    \
+                        -                                     \
+                    >$report/$sample.card.abundance.txt;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+} 
+
+sub pies_run {
+
+    my $sh = qq{$runs/pies.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        foreach my $level ( @ontologies_t ) {
+            print EXPORT qq{mkdir -p $pies/$sample/$level ;\n};
+            print EXPORT ntop( $sample, $level );
+            print EXPORT pies( $sample, $level );
+            print EXPORT pdf2png( qq{$pies/$sample/$level/$level.pdf} );
+        }
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 4 -p $metadata{cpus} "{}"\n} if(!$dry_run);
+
+}
+
+sub ntop {
+    
+    my ($sample, $level) = @_;
+    
+    my $cmd = qq{cut -f1,2                                  \
+                    $annotation/$sample.$level-bins.txt     \
+                |$binaries/tsv-utils rank                   \
+                    -r $rank -                              \
+                >$pies/$sample/$level/$level.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub pies {
+
+    my ($sample, $level) = @_;
+   
+    my $cmd = qq{$utils/pies.R                             \
+                    $pies/$sample/$level/$level.txt        \
+                    $pies/$sample/$level/$level.pdf        \
+                    $level ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stacks_run {
+
+    my $sh = qq{$runs/stacks.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+   
+    foreach my $level ( @ontologies_t ) {
+          print EXPORT qq{mkdir -p $stacks/$level ;\n};
+          print EXPORT agg( $level );
+          print EXPORT rank( $level );
+          print EXPORT stacks( $level );
+          print EXPORT pdf2png( qq{$stacks/$level/$level.pdf} );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 5 -p $metadata{cpus} "{}"\n} if(!$dry_run);
+
+}
+
+sub agg {
+    
+    my $level = shift;
+    
+    my @t     = ();
+    map {push @t, qq{$_:$annotation/$_.$level-bins.txt}} @samples_t;
+    my $list  = join(" ", @t);
+    
+    my $cmd   = qq{$binaries/tsv-utils agg              \
+                    $list                               \
+                >$stats/$level.txt; \n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub rank {
+    
+    my $level   = shift;
+    
+    my $cmd     = qq{$binaries/tsv-utils  rank          \
+                        -r $rank                        \
+                        $stats/$level.txt               \
+                    >$stacks/$level/$level.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stacks {
+
+    my $level   = shift;
+   
+    my $cmd     = qq{$utils/stacks.R                    \
+                        $stacks/$level/$level.txt       \
+                        $stacks/$level/$level.pdf       \
+                        $level ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub pdf2png {
+
+    my $pdf     = shift;
+    
+    my $cmd     = qq{$utils/pdf2png $pdf \n};
+    return $cmd;
+
+}
+
+sub bins_run {
+
+    my $sh    =  qq{$runs/bins.sh};
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample (@samples_t) {
+       foreach my $ontology ( @ontologies_t ) {
+            print EXPORT qq{mkdir -p $abundance/$sample ;\n};
+            print EXPORT gene_member( $sample, $ontology );
+            print EXPORT gene_count( $sample, $ontology );
+       }
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 3 -p $metadata{cpus} "{}"} if(!$dry_run);
+
+}
+
+sub gene_member {
+
+    my ($sample, $ontology) = @_;
+    my $cmd = qq{cut -f1,3                                   \
+                    $annotation/$sample.$ontology-bins.txt   \
+                >$abundance/$sample/$ontology.bin.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub gene_count {
+
+    my ($sample, $ontology) = @_;
+    my $cmd = qq{cut -f1,2                                   \
+                    $annotation/$sample.$ontology-bins.txt   \
+                >$abundance/$sample/$ontology.gene_count.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub melt_run {
+
+    my $sh    =  qq{$runs/melt.sh};
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample (@samples_t) {
+        foreach my $ontology ( @ontologies_t ) {
+            foreach my $type (qw/counts tpm/) {
+                print EXPORT melt( $sample, $ontology, $type );
+            }
+        }
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p $metadata{cpus} "{}"} if(!$dry_run);
+
+}
+
+sub melt {
+
+    my ($sample, $ontology, $type) = @_;
+    my $c   = ($type eq "counts") ? 3 : 4;
+    my $cmd = qq{cut -f 1,$c  $quant/$sample.txt           \
+                |$binaries/tsv-utils melt                  \
+                    -d ','                                 \
+                    $abundance/$sample/$ontology.bin.txt   \
+                    -                                      \
+                |grep -v "S Function unknown"              \
+                >$abundance/$sample/$ontology.$type.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}

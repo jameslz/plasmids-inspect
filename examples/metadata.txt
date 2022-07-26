@@ -1,0 +1,38 @@
+#metadata
+project_home      /project/plasmids-inspect
+project_id        data_analysis
+raw_data          /project/plasmids-inspect/raw_data
+mapping_file      /project/plasmids-inspect/mapping_file.txt
+dry_run           F
+
+#hardware
+cpus              80
+parallel          3
+threads           30
+
+#bmtagger
+bmtagger           F
+bmtagger_db        /biostack/database/kbase/hg38/bmtagger/hg38
+bmtagger_threads   20
+
+
+#assembly
+memory              512
+metaspades_threads  98
+metaspades_para     -k 21,33,55,77
+min_contig_length   200
+
+#plasclass
+plasclass_score     0.99
+plasclass_minlen    500
+
+#plasmids
+engines             plasclass,plasforest
+
+#annotation
+card               /biostack/database/card
+card_para          -e 1e-10 --cov-mode 2  -c 0.7 --min-seq-id 0.8
+
+refseq             /biostack/database/plasmid
+refseq_para        -e 1e-10 -i 50  -b 50  -c 70
+

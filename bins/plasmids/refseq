@@ -1,0 +1,296 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ( $config )           = @ARGV;
+
+my  %metadata            = ();
+profiling();
+
+my  $project_home        =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/refseq};
+
+my  $blastn              =  qq{$project_home/blastn};
+my  $runs                =  qq{$project_home/runs};
+my  $report              =  qq{$project_home/report};
+my  $bins                =  qq{$project_home/bins};
+
+my  $datasets            =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/inspect/contigs};
+
+my  @samples_t           = ();
+
+my  $utils               =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries            =  dirname( abs_path($0) ) . '/../../binaries';
+my  $db                  =  $metadata{refseq};
+my  @taxon_t             = qw/phylum order class family genus species/;
+
+my  $dry_run             =  0;
+    $dry_run             =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub profiling{
+
+    open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+          
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    
+    } 
+    close PROFILE;
+
+}
+
+sub submit {
+  
+    mapping_file();
+    make_fs();
+    blastn_run();
+    annotation_run();
+    bedcov_run();
+    bins_run();
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}})   || die "[ERR]: can't open $metadata{mapping_file}. \n";
+    while (<PROFILE>) {
+    
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\s+/,$_;
+        push @samples_t , $its[0];
+
+    }
+    close PROFILE;
+    
+    foreach my $db (qw/refseq/) {
+          
+        if(! exists $metadata{$db}){
+            print STDERR "[ERR]: please specify the $db metadata.\n";
+            exit;
+        }
+    
+    }
+}
+
+sub make_fs {
+   
+    my $cmd = qq{mkdir -p $runs
+                          $blastn
+                          $bins
+                          $report};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub blastn_run {
+
+    my $sh    =  qq{$runs/blastn.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  blastn( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+}
+
+sub blastn {
+    
+    my $sample =  shift;
+    my $cmd    =  qq{blastn                                 \
+                       -task megablast                      \
+                       -evalue 1e-5                         \
+                       -query $datasets/$sample.fasta       \
+                       -db $db/blast/plasmid.genomic        \
+                       -num_threads $metadata{cpus}         \
+                       -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore qcovs"  \
+                       -max_target_seqs 5                   \
+                       -out $blastn/$sample.txt;\n};
+         $cmd =~ s/\s+\n\s+/ /msg; 
+      return $cmd;
+}
+
+sub annotation_run {
+
+    my $sh    =  qq{$runs/annotation.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  hits( $sample );
+        print EXPORT  level( $sample );
+        print EXPORT  taxonomy( $sample );
+        print EXPORT  fmt( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 4 -p  $metadata{parallel} "{}"\n} if(!$dry_run);
+}
+
+sub hits {
+    
+    my $sample    =  shift;
+    my $para      = (exists $metadata{refseq_para}) ? $metadata{refseq_para} : '  -e 1e-10 -i 50 -b 50 -c 80 ';
+    my $cmd       =  qq{$binaries/blast-utils hits            \
+                           $para                              \
+                           $blastn/$sample.txt                \
+                        |$binaries/blast-utils best_hsp  -    \
+                        |$binaries/tsv-utils add_headline     \
+                           "#seqid\\tbest hit\\tpident\\tlength\\tmismatch\\tgapopen\\tqstart\\tqend\\tsstart\\tsend\\tevalue\\tbitscore\\tqcovs"  \
+                           -                                  \
+                        >$blastn/$sample.hits.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub level {
+    
+    my $sample    =   shift;
+    my $cmd       =   qq{cut -f1,2                           \
+                            $blastn/$sample.hits.txt         \
+                        |$binaries/tsv-utils annotation      \
+                            -c2                              \
+                            $db/misc/taxid.txt -             \
+                        |cut -f1,3                           \
+                        |tail -n +2                          \
+                        |$binaries/taxon-utils translate     \
+                            -c2                              \
+                            $db/taxonomy/taxon.map -         \
+                        >$blastn/$sample.level.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub taxonomy {
+    
+    my $sample    =  shift;
+    my $cmd       =  qq{$binaries/tsv-utils annotation       \
+                           -c2                               \
+                           $db/misc/taxonomy.txt             \
+                           $blastn/$sample.hits.txt          \
+                        |$binaries/tsv-utils definition      \
+                           -t 'annotation'                   \
+                           -c2  $db/misc/annotation.txt -    \
+                        >$blastn/$sample.annotation.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub fmt {
+    
+    my $sample    =  shift;
+    my $cmd       =  qq{cut -f1,2,14,15                      \
+                          $blastn/$sample.annotation.txt     \
+                        >$report/$sample.refseq.txt;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub bedcov_run {
+
+    my $sh    =  qq{$runs/bedcov.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  bedcov( $sample );
+        print EXPORT  collapse( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+}
+
+sub bedcov{
+
+    my $sample    =  shift;
+    my $cmd       =  qq{$binaries/blast-utils blast2bed      \
+                          $blastn/$sample.txt                \
+                        |$binaries/bedtk sort  -             \
+                        |$binaries/bedtk merge -             \
+                        >$blastn/$sample.bedcov.txt;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub collapse {
+
+    my $sample    =  shift;
+    my $cmd       =  qq{cut -f1                              \
+                          $blastn/$sample.bedcov.txt         \
+                        |$binaries/tsv-utils subset          \
+                          $db/misc/length.txt -              \
+                        |$binaries/blast-utils bedcov        \
+                          $blastn/$sample.bedcov.txt -       \
+                        |$binaries/tsv-utils annotation -c1  \
+                          $db/misc/annotation.txt -          \
+                        |$binaries/tsv-utils annotation -c1  \
+                          $db/misc/taxonomy.txt -            \
+                        |$binaries/tsv-utils add_headline    \
+                           "#seqid\\tlength\\tpercentage\\tregion\\tdescription\\ttaxonomy"  \
+                           -                                 \
+                       >$report/$sample.coverage.txt;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub bins_run {
+  
+    my $sh   =  qq{$runs/bins.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        foreach my $level ( @taxon_t ){
+            print EXPORT bins( $sample, $level );
+            print EXPORT members( $sample, $level );
+        }
+    } 
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 2  -p $metadata{cpus} "{}"} if(!$dry_run);
+}
+
+sub bins {
+
+    my ($sample, $level)  =  @_;
+    my $cmd  = qq{$binaries/taxon-utils bin              \
+                     -l $level                           \
+                     $db/taxonomy/taxon.map              \
+                     $blastn/$sample.level.txt           \
+                  >$bins/$sample.$level.txt ;\n};
+       $cmd  =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub members {
+
+    my ($sample, $level)  =  @_;
+    my $cmd = qq{$binaries/tsv-utils bins               \
+                    -t 3 -s 1                           \
+                    $bins/$sample.$level.txt            \
+                |cut -f1,3                              \
+                >$bins/$sample.$level.bins.txt ;\n};
+       $cmd  =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}

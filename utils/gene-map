@@ -1,0 +1,31 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "Usage:perl $0 <fp>" if(@ARGV != 1);
+
+my ( $fp ) = @ARGV;
+
+print_map();
+
+exit;
+
+sub print_map {
+    
+    my $fh;
+    
+    ($fp eq '-') ? ($fh = "STDIN" ) : (open($fh, $fp) || die "[ERR] can't open $fp\n");
+
+    while (<$fh>) {
+        chomp;
+        my @its = split /_/, $_;
+        
+        pop @its;
+        print join("_", @its), qq{\t$_}, "\n";
+
+    }
+    
+    close $fh;
+    
+}

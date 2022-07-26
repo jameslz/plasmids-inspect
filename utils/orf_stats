@@ -1,0 +1,50 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <samples> <lib>" if(@ARGV != 2);
+
+my ($samples, $lib ) = @ARGV;
+
+my  @samples_t       = ();
+my  $binaries        =  dirname( abs_path($0) ) . '/../binaries';
+
+
+load_sample();
+print_stats();
+
+exit;
+
+sub load_sample {
+
+    my %samples_h = ();
+    open (DATA, $samples)   || die "$!  \n";
+    while (<DATA>) {
+        
+        chomp;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+        $samples_h{ $its[0] } = ();    
+    }
+    close DATA;
+    
+    push @samples_t, keys %samples_h;
+}
+
+sub print_stats {
+
+    print qq{#sample\tsequence\tbase\tmin_len\tmax_len\tavg_len\n};
+
+    foreach my $sample ( @samples_t ) {
+        
+        my $counts = `$binaries/fastx-utils info $lib/$sample.fna`;
+        my @t      = split /\n/, $counts;
+        print $sample, "\t", $t[1] , "\n";
+        
+    }
+
+}

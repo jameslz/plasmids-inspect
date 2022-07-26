@@ -1,0 +1,619 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import argparse
+from pathlib import Path
+import os
+import time
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description='Usage: auto-report  summarize_path  images_path name\n',
+        prog="plasmids-inspect")
+    parser.add_argument(
+        "summarize_path",
+        help="summarize_path")
+    parser.add_argument(
+        "images_path",
+        help="images_path")
+    parser.add_argument(
+        "name",
+        help="sample name")
+    return parser.parse_args()
+
+
+def if_exist(file_path):
+    if Path(file_path).is_file():
+        return file_path
+    else:
+        return images + '/blank.jpg'
+
+
+def if_exist_txt(file_path):
+    if Path(file_path).is_file():
+        return file_path
+    else:
+        return images + '/blank.txt'
+
+
+def write_data(path, images, name):
+    localtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()).split(' ')[0]
+    report = path + '/report.Rmd'
+    if Path(report).is_file():
+        os.remove(report)
+
+    title = '''
+---
+title: "Plasmid-Inspecct:质粒鉴定宏基因组数据分析"
+author: "plasmids-inspect 0.0.1 工作流"
+CJKmainfont:  Song
+output:
+  html_document:
+    wordkeep_tex: yes  
+    latex_engine: xelatex
+---
+
+<br/>
+<br/>
+<br/>
+<br/>
+
+
+**质粒鉴定宏基因组数据分析**<br>
+**逻捷科技(上海)有限公司**<br>
+**{time}**
+
+
+<br/>
+<br/>
+<br/>
+<br/>
+
+    '''.format(time=localtime)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(title)
+
+    process_png = images + '/workflow.png'
+    process_png = if_exist(process_png)
+
+    process = '''
+### **一 概述**
+<br/>
+
+质粒是细胞内的一种小型染色体外DNA分子，与染色体DNA物理分离，可以独立复制。它们最常见于细菌中的小型环状双链DNA分子。
+在自然界中，质粒常常携带有利于生物体生存的基因，并赋予选择优势，如抗生素抗性，质粒通常非常小，只包含在某些情况或条件下可能有用的额外基因。
+<br/>
+
+质粒被认为是复制子，是能够在合适的宿主体内自主复制的DNA单位，质粒主要通过共轭从一个细菌传播到另一个细菌（甚至是另一个物种），这种宿主之间的遗传物质转移是水平基因转移的一种机制，质粒被视为移动组（mobilome）的一部分。
+<br/>
+
+携带抗生素抗性基因的质粒通过传播会造成耐药基因的传播，直接对环境样本进行鸟枪法测序（宏基因组测序）可以有效获识别环境样本中质粒序列以及判断是否携带有抗生素抗性基因，进而对抗生素抗性通过质粒进行传播进行监控。
+<br/>
+<br/>
+
+### **二 项目流程**
+<br/>
+
+首先会对原始数据（raw reads）进行质量控制、基因组组装以及纠错、物种来源鉴定、基因预测以及功能预测、耐药基因预测，并进行质粒种类鉴定、物种来源鉴定、丰度定量及抗性基因预测最后汇总。
+<br/>
+
+<center>![图2-1：生物信息数据处理流程图]({process_png})</center>
+<br/>
+<br/>
+
+<center>**图2-1：生物信息数据处理流程图**</center>
+<br/>
+<br/>
+
+图2-2 生物信息数据处理流程图
+<br/>
+
+基因组测序数据分析的核心步骤：
+（1）、原始测序数据质量控制、去除接头和低质量序列、去宿主序列<br>
+（2）、基因组组装<br>
+（3）、ORF预测及丰度定量<br>
+（4）、contig丰度定量<br>
+（5）、质粒鉴定<br>
+（6）、质粒物种鉴定<br>
+（7）、质粒物种的多样性分析<br>
+（8）、质粒上的抗性基因预测<br>
+<br/>
+<br/>
+
+    '''.format(process_png=process_png)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(process)
+
+    sequencing = path + '/stats/sequencing.stats.txt'
+    sequencing = if_exist_txt(sequencing)
+    quality_control = path + '/stats/quality_control.stats.txt'
+    quality_control = if_exist_txt(quality_control)
+    seq_info = '''
+#### **1 原始数据及其质量控制**
+<br/>
+
+使用**Trimmomatic **切除接头序列、双端低质量序列，并保留大于 **36bp** 的双端配对序列。
+<br/>
+
+<center>**表3-1：原始数据统计表**</center>
+<br/>
+
+```{{r echo=FALSE, results='asis'}}
+table = read.csv('{sequencing}', head = TRUE, sep="\\t", check.names=F, quote = "", comment.char="")
+library(knitr)
+kable(table)
+```
+<br/>
+
+**文件名称**：sequencing.stats.txt <br>
+**结果目录**：原始数据统计结果文件在 summarize/stats目录 
+<br/>
+
+<center>**表 3-2质量控制后结果统计信息**</center>
+<br/>
+
+```{{r echo=FALSE, results='asis'}}
+table = read.csv('{quality_control}', head = TRUE, sep="\\t", check.names=F, quote = "", comment.char="")
+library(knitr)
+kable(table)
+```
+<br/>
+
+**文件名称**：quality_control.stats.txt <br>
+**结果目录**：原始数据统计结果文件在：summarize/stats 目录
+<br/>
+<br/>
+
+    '''.format(sequencing=sequencing, quality_control=quality_control)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(seq_info)
+
+    assembly_table = path + '/stats/metaquast/metaquast.txt'
+    assembly_table = if_exist(assembly_table)
+    assembly = '''
+#### **2 基因组拼装**
+<br/>
+
+<center>**表3-3：基因组拼装统计表**</center>
+<br/>
+
+```{{r echo=FALSE, results='asis'}}
+table = read.csv('{assembly_table}', head = TRUE, sep="\\t", check.names=F, quote = "", comment.char="")
+library(knitr)
+if(ncol(table)>5){{
+kable(head(table[,1:5]))
+}}else{{
+kable(head(table))
+}}
+```
+<br/>
+
+说明：表格描述宏基因组组装结果的统计信息，“>= 0 bp” 描述为序列长度大于 “0bp”的限制条件。
+基因组组装结果以.fasta文件格式提供，序列名称按照: “样本名称_索引号”进行标识。
+<br/>
+
+**文件名称**：assembly.stats.txt<br/>
+**结果目录**： summarize/stats/metaquast/
+<br/>
+<br/>
+
+        '''.format(assembly_table=assembly_table)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(assembly)
+
+    inspect_table = path + '/samples/' + name + '/refseq/' + name + '.refseq.txt'
+    inspect_table = if_exist(inspect_table)
+    inspect = '''
+#### **3 质粒序列鉴定**
+<br/>
+
+<center>**表 3-4：质粒鉴定信息表**</center>
+<br/>
+
+```{{r echo=FALSE, results='asis'}}
+table = read.csv('{inspect_table}', head = TRUE, sep="\\t", check.names=F, quote = "", comment.char="")
+library(knitr)
+kable(head(table))
+```
+<br/>
+
+**文件名称**：\$sample.coverage.txt<br/>
+说明：质粒信息表提供质粒的contig号、匹配的质粒ID、质粒在contig上的完整度、contig的物种信息
+<br/>
+
+**结果目录**：summarize/samples/\$sample/refseq
+<br/>
+<br/>
+
+        '''.format(inspect_table=inspect_table)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(inspect)
+
+    arg_table = path + '/samples/' + name + '/' + name + '.orf.annotation.txt'
+    arg_table = if_exist(arg_table)
+    arg = '''
+#### **4 质粒携带的耐药基因注释**
+<br/>
+
+<center>**表 3-5：ORF开放阅读框统计表**</center>
+<br/>
+
+```{{r echo=FALSE, results='asis'}}
+table = read.csv('{arg_table}', head = TRUE, sep="\\t", check.names=F, quote = "", comment.char="")
+library(knitr)
+kable(head(table))
+```
+<br/>
+
+**文件名称**：\$sample.orf.annotation.txt
+<br/>
+
+说明： 开放阅读框提供对应的核酸序列、氨基酸序列以及对应的基因位置文件， 结果以.fasta和gff文件格式提供，序列名称按照: “样本名称_Contig索引号_ORF索引号”进行标识。
+<br/>
+
+**结果目录**： summarize/sample/\$sample/\$sample.orf.annotation.txt
+<br/>
+<br/>
+
+        '''.format(arg_table=arg_table)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(arg)
+
+    krona = images + '/krona.png'
+    krona = if_exist(krona)
+    lollipop = path + '/samples/' + name + '/taxonomy/lollipop/phylum.png'
+    lollipop = if_exist(lollipop)
+    barplot_div = path + '/stats/diversity/barplot/phylum.10.png'
+    barplot_div = if_exist(barplot_div)
+    barplot_abundance = path + '/stats/abundance/barplot/phylum.png'
+    barplot_abundance = if_exist(barplot_abundance)
+    heatmap_div = path + '/stats/diversity/heatmap/phylum.10.png'
+    heatmap_div = if_exist(heatmap_div)
+    heatmap_abundance = path + '/stats/abundance/heatmap/phylum.png'
+    heatmap_abundance = if_exist(heatmap_abundance)
+    pca = path + '/stats/diversity/pca/pca.png'
+    pca = if_exist(pca)
+    pcoa = path + '/stats/diversity/pcoa/jaccard.pcoa.png'
+    pcoa = if_exist(pcoa)
+    nmds = path + '/stats/diversity/nmds/jaccard.nmds.png'
+    nmds = if_exist(nmds)
+    upgma = path + '/stats/diversity/upgma/jaccard.upgma.bar.png'
+    upgma = if_exist(upgma)
+    taxonomy = '''
+#### **5 质粒物种组成分析**
+<br/>
+
+**单样本物种分析**
+<br/>
+
+对质粒的contig序列进行分类，可以检测样本中是否含有其它菌株或者宿主污染，可以直观的获得样本内序列物种分类信息（图3-1）。饼图中从中心到外周的层级关系依次代表不同的分类级别，扇区的大小代表不同分类等级上物种的相对丰度的高低。
+<br/>
+
+<center>![图3-1：单个样本物种注释KRONA可视化图]({krona}){{width=70%}}</center>
+<br/>
+
+<center>**图3-1：单个样本物种注释KRONA可视化图**</center>
+<br/>
+
+说明：文件都可以在浏览器打开，并进行交互式操作。
+<br/>
+
+**结果目录**： summarize/samples/\$sample/taxonomy/krona
+<br/>
+
+<center>![图3-2：门水平的组成 Top10：提供门、纲、目、科、属、种水平的lollipop可视化图]({lollipop}){{width=70%}}</center>
+<br/>
+
+<center>**图3-2：门水平的组成 Top10：提供门、纲、目、科、属、种水平的lollipop可视化图**</center>
+<br/>
+
+说明：横坐标相对丰度（abundance）为注释到该水平序列数目占该水平总注释数据的比率, 纵坐标为物种系统分类。
+<br/>
+
+**结果目录**： summarize/samples/\$sample/taxonomy/lollipop
+<br/>
+<br/>
+
+**多样本柱状图**
+<br/>
+
+统计每个样品中质粒的物种在各分类水平（Kingdom, Phylum, Class, Order, Family, Genus, Species）上的相对丰度，即：序列数目占分类到该水平的总序列数的比例，可有效的评估样本的物种多样性（注释到种的种类越多，多样性越高）及样本的物种复杂度（一般的注释到种的比例越低表示样本的物种复杂度越高）
+<br/>
+
+<center>![图3-3： 门水平上的物种相对丰度柱形图]({barplot_div}){{width=70%}}</center>
+<br/>
+
+<center>**图3-3： 门水平上的物种相对丰度柱形图**</center>
+<br/>
+
+说明：横坐标（Specimens）是样品名，纵坐标相对分度（Relative Abundance）表示注释到该水平的序列数目占该水平总注释数据的比率。
+<br/>
+
+**结果目录**： summarize/stats/diversity/barplot 
+<br/>
+
+<center>![图3-4： 门水平上的物种丰度柱形图]({barplot_abundance}){{width=70%}}</center>
+<br/>
+
+<center>**图3-4： 门水平上的物种丰度柱形图**</center>
+<br/>
+
+说明：横坐标（Specimens）是样品名，纵坐标丰度（Abundance）表示注释到该水平的序列数目。
+<br/>
+
+**结果目录**： summarize/stats/abundance/barplot 
+<br/>
+<br/>
+
+**多样本热图**
+
+根据所有样品在各水平的物种注释及丰度信息绘制热图，并从分类信息和样品间差异两个层面进行聚类，可以寻找物种或样本的聚集规律。
+<br/>
+
+<center>![图3-5：种水平物种丰度聚类图]({heatmap_div}){{width=70%}}</center>
+<br/>
+
+<center>**图3-5：种水平物种丰度聚类图**</center>
+<br/>
+
+说明：横向为样品信息，纵向为物种注释信息，图中左侧的聚类树为物种聚类树，上方的聚类树为样品聚类树，热图部分对应的值为每一行物种相对丰度（为扩大颜色可识别度，相对丰度取log10变换）。
+<br/>
+
+**结果目录**： summarize/stats/ diversity/heatmap
+<br/>
+
+**定量丰度热图**
+
+<center>![图3-6：种水平物种丰度聚类图]({heatmap_abundance}){{width=70%}}</center>
+<br/>
+
+<center>**图3-6：种水平物种丰度聚类图**</center>
+<br/>
+
+说明：横向为样品信息，纵向为物种注释信息，图中左侧的聚类树为物种聚类树，上方的聚类树为样品聚类树，热图部分对应的值为每一行物种定量丰度（为扩大颜色可识别度，定量丰度取log10变换）
+<br/>
+
+**结果目录**： summarize/stats/abundance/heatmap
+<br/>
+
+**物种多样性降维度分析**
+<br/>
+
+Beta Diversity是对不同样品间的微生物群落构成进行比较。根据样本物种组成丰度信息计算Bray Curtis，jaccard以及jaccard距离来评估不同样品间的微生物群落构差异。
+通过多变量统计学方法，如主成分分析（PCA，Principal Component Analysis），主坐标分析（PCoA，Principal Co-ordinates Analysis）和非加权组平均聚类分析（UPGMA，Unweighted Pair-group Method with Arithmetic Means）等分析，进一步从结果中挖掘各样品中的微生物群落结构差异。
+<br/>
+
+<center>![图3-7：基于种水平的主成分分析]({pca}){{width=70%}}</center>
+<br/>
+
+<center>**图3-7：基于种水平的主成分分析**</center>
+<br/>
+
+说明：主成分分析（PCA，Principal Component Analysis），是一种应用方差分解，对多维数据进行降维，从而提取出数据中最主要元素和结构的方法。 X坐标表示第一主成分（PC1）， Y坐标表示第二主成分（PC2），对应的百分比则表示改成分对样品间差异的解释度；图中的每个点表示一个样品，点与点之间的距离表示差异程度。同一个组的样品使用同一种颜色表示。对于分组的样品，会用椭圆来展示样品组见的区分区域。
+<br/>
+
+**结果目录**： summarize/stats/diversity/pca
+<br/>
+
+<center>![图3-8：基于种水平的主坐标分析 (jaccard)]({pcoa}){{width=70%}}</center>
+<br/>
+
+<center>**图3-8：基于种水平的主坐标分析 (jaccard)**</center>
+<br/>
+
+说明：主坐标分析（PCoA，Principal Co-ordinates Analysis），是一种与PCA类似的降维排序方法，从多维数据中提取出最主要元素和结构。 X坐标表示第一主成分（PC1）， Y坐标表示第二主成分（PC2），对应的百分比则表示改成分对样品间差异的解释度；图中的每个点表示一个样品，点与点之间的距离表示差异程度。同一个组的样品使用同一种颜色表示。对于分组的样品，会用椭圆来展示样品组见的区分区域。
+<br/>
+
+**结果目录**： summarize/stats/diversity/pcoa
+<br/>
+
+<center>![图3-9：基于种水平的无度量多维标定法 (jaccard)]({nmds}){{width=70%}}</center>
+<br/>
+
+<center>**图3-9：基于种水平的无度量多维标定法 (jaccard)**</center>
+<br/>
+
+说明：无度量多维标定法（NMDS ，Non-Metric Multi-Dimensional Scaling）是一种将多维空间的研究对象（样本或变量）简化到低维空间进行定位、分析和归类, 同时又保留对象间原始关系的数据分析方法。
+X坐标表示第一成分， Y坐标表示第二成分，Z坐标表示第三成分，图中的每个点表示一个样品，同一个组的样品使用同一种颜色表示。对于分组的样品，会用椭圆来展示样品组见的区分区域，点与点之间的距离表示差异程度；一般当Stress小于0.2时，表明NMDS分析具有一定的可靠性。对于分组的样品，会用椭圆来展示样品组见的区分区域。
+<br/>
+
+**结果目录**： summarize/stats/diversity/nmds
+<br/>
+<br/>
+
+**样品聚类分析**
+<br/>
+
+为了研究不同样品间的相似性，还可以通过对样品进行聚类分析，采用UPGMA（Unweighted Pair-group Method with Arithmetic Mean）聚类分析方法构建样品的聚类树。 将距离矩阵和做UPGMA聚类分析，并将聚类结果与各样品在门水平（Phylum）上的部分物种相对丰度结合。
+<br/>
+
+<center>![图3-10：基于jaccard距离的UPGMA聚类树与门水平部分物种的信息统计]({upgma}){{width=70%}}</center>
+<br/>
+
+<center>**图3-10：基于jaccard距离的UPGMA聚类树与门水平部分物种的信息统计**</center>
+<br/>
+
+说明：左侧是UPGMA算法基于jaccard距离构建的UPGMA聚类树，右侧的是各样品在门水平上的部分物种（丰度最高的10个）的相对丰度分布图。
+<br/>
+
+**结果目录**： summarize/stats/diversity/upgma
+<br/>
+<br/>
+
+        '''.format(krona=krona, lollipop=lollipop, barplot_div=barplot_div, barplot_abundance=barplot_abundance,
+                   heatmap_div=heatmap_div, heatmap_abundance=heatmap_abundance, pca=pca, pcoa=pcoa, nmds=nmds, upgma=upgma)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(taxonomy)
+
+    amr_metagenome = path + '/stats/amr/metagenome/stacks/family/family.png'
+    amr_metagenome = if_exist(amr_metagenome)
+    amr_plasmids = path + '/stats/amr/plasmids/stacks/family/family.png'
+    amr_plasmids = if_exist(amr_plasmids)
+    amr = '''
+#### **6 耐药基因预测**
+<br/>
+
+**宏基因组耐药基因预测**
+<br/>
+
+<center>![图3-11：耐药基因功能分类系统的功能组成Top10 单样本可视化（family）]({amr_metagenome}){{width=70%}}</center>
+<br/>
+
+<center>**图3-11：耐药基因功能分类系统的功能组成Top10 单样本可视化（family）**</center>
+<br/>
+
+说明：采用堆叠图绘制丰度注释的耐药基因的功能分类，X轴（极坐标轴）表示耐药基因 的分类，Y轴(极坐标轴)表示可以注释到当前分类的预测的耐药基因丰度（TPM）。 
+<br/>
+
+**结果目录**：summarize/stats/amr/metagenome/stacks/family
+<br/>
+
+**质粒中的耐药基因预测**
+
+<center>![图3-12：耐药基因功能分类系统的功能组成Top10 单样本可视化（family）]({amr_plasmids}){{width=70%}}</center>
+<br/>
+
+<center>**图3-12：耐药基因功能分类系统的功能组成Top10 单样本可视化（family）**</center>
+<br/>
+
+说明：采用堆叠图形式绘制丰度注释的耐药基因的功能分类，X轴（极坐标轴）表示耐药基因 的分类，Y轴(极坐标轴)表示可以注释到当前分类的预测的耐药基因丰度（TPM）。
+<br/>
+
+**结果目录**：summarize/stats/amr/metagenome/stacks/family
+<br/>
+<br/>
+
+    '''.format(amr_metagenome=amr_metagenome, amr_plasmids=amr_plasmids)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(amr)
+
+    software = images + '/software.txt'
+    software = if_exist(software)
+    tpm = images + '/TPM.png'
+    tpm = if_exist(tpm)
+    reference = '''
+### **四 分析方法及参考文献**
+<br/>
+<br/>
+
+#### **1 下机数据质量控制**
+<br/>
+
+采用**Illumina MiSeq/NovaSeq**测序平台得到的下机数据，存在一定的低质量数据，会干扰分析的结果，因此在进一步分析前，需要对下机数据进行预处理，具体处理步骤如下： 对原始测序数据使用FastQC（ 版本：0.11.9 ） 进行碱基质量统计，并使用R统计软件对结果进行可视化。 原始序列需对reads进行质量质控，对序列进行修剪，去除序列末端低质量的序列。 使用 ** Trimmomatic**（ 版本：0.39 ） 对序列进行修剪和去除接头序列，首先去除头部碱基质量低于3的碱基以及末端碱基质量低于3的碱基， **Trimmomatic** 从5’ 端开始以窗口（ Window ）的形式进行滑动，当窗口的平均碱基质量低于设定阈值，则从该处进行切除，窗口大小设置为4个碱基，阈值设置为15，最小长度设置为**36bp**；
+针对宿主明确的样本使用**BMTagger**版本 3.102）去除宿主基因组序列，默认参数。
+<br/>
+<br/>
+
+#### **2 宏基因组组装**
+<br/>
+
+将数据清理后的序列使用 **MetaSPADes**（ 版本：3.15.3 ）进行组装，**MetaSPADes**拼装使用**“--meta”**模式，Kmer设置为 **“-k 21,33,55”**，其它使用默认参数，组装参数样本组装最小序列长度不小于**200bp**。
+<br/>
+<br/>
+
+#### **3. 开放阅读框预测**
+<br/>
+
+组装后的基因组蛋白质编码基因预测使用了**MetaProdigal**（版本：2.6.3）。
+<br/>
+<br/>
+
+#### **4. 基因丰度定量**
+<br/>
+
+
+使用 **Bowtie2**（版本：2.4.4）将清理后的序列比对到非冗余基因集合上，然后按照如下公式计算TPM数值。<br>
+
+<center>![TPM计算公式]({tpm})</center>
+
+其中**Ng**是比对到功能基因**G**的**reads** 数，**Lg** 是基因**G** 的基因序列长度，j表是构建的非冗余基因集合的所有基因索引。ｇ对应的非冗余基因集合的目标基因索引。
+<br/>
+<br/>
+
+#### **5. contig丰度定量**
+<br/>
+组装 **Contigs** 丰度定量采用了**MetaKaliisto**（版本：0.46.2）计算每个**Contigs** 的 **TPM** 以及定量 **counts** 信息。
+<br/>
+<br/>
+
+#### **6. 耐药基因注释**
+<br/>
+
+耐药基因使用**CARD（Comprehensive Antibiotic Resistance Database）** 数据库的（RELEASE：2022_01）homolog_model氨基酸序列进行序列相似性搜索，序列比对引擎 mmseqs2 ，参数：-e 1e-10 --cov-mode 2  -c 0.7 --min-seq-id 0.8，根据CARD数据的分类系统在aro、family、 drugs、 mechanism四个水平进行汇总。
+<br/>
+<br/>
+
+#### **7. 质粒序列鉴定**
+<br/>
+
+使用组合 **PlasForest**（版本1.3）和 **PlasClass**（版本0.1） 预测组装的宏基因组的序列分类，识别质粒来源的Contigs序列，PlasForest使用默认参数，PlasClass设置 **“score ≥ 0.99, minimal contig length ≥ 500bp”**<br/>
+<br/>
+
+#### **8. 序列分类**
+<br/>
+
+使用 **NCBI Refseq** 质粒序列库（2022_03版本，39,967条质粒序列），使用BLASTN作为序列相似性搜索引擎（-e 1e-10 -i 50 -c 70），最佳比对结果作为质粒序列物种分类，并在“界、门、纲、目、科、属、种”不同的分类水平。
+<br/>
+<br/>
+
+#### **9. 质粒组成多样性分析**
+<br/>
+
+#### **9.1 质粒物种组成定性分析**
+<br/>
+
+在不同分类水平汇总的Contigs数目，进行汇总，计算相对丰度，并进行热图以及柱状图可视化分析。 种水平的相对丰度使用VEGAN （版本2.5-7）进行PCA分析以及计算 **jaccard，bray_curtis，euclidean** 距离矩阵并进行降维分析（NMDS，PCoA）。
+<br/>
+<br/>
+
+#### **9.2 质粒物种组成定量分析**
+<br/>
+
+使用 **Contigs** 的丰度信息对 **Contig** 的物种组成进行加权定量分析，按照上述分析方法进行多样性分析。
+<br/>
+<br/>
+
+#### **10. 质粒耐药基因分析**
+<br/>
+
+使用鉴定的质粒 **Contigs** 信息，抽取宏基因组数据结果中质粒来源的耐药基因，根据 **CARD** 数据的分类系统在 **aro、family、 drugs、 mechanism** 四个水平进行汇总比较。
+<br/>
+<br/>
+
+#### **软件列表**
+<br/>
+
+```{{r echo=FALSE, results='asis'}}
+table = read.csv('{software}', head = TRUE, sep="\\t", check.names=F, quote = "", comment.char="")
+library(knitr)
+kable(head(table))
+```
+<br/>
+<br/>
+
+#### **参考文献**
+<br/>
+
+1.	Andrews, S., FASTQC. A quality control tool for high throughput sequence data. 2010.
+2.	Bolger, A.M., M. Lohse, and B. Usadel, Trimmomatic: a flexible trimmer for Illumina sequence data. Bioinformatics (Oxford, England), 2014. 30(15): p. 2114-2120.
+3.	Rotmistrovsky, K. and R. Agarwala, BMTagger: Best Match Tagger for removing human reads from metagenomics datasets. Unpublished, 2011.
+4.	Nurk, S., et al., metaSPAdes: a new versatile metagenomic assembler. Genome research, 2017. 27(5): p. 824-834.
+5.	Bray, N.L., et al., Near-optimal probabilistic RNA-seq quantification. Nature Biotechnology, 2016. 34(5): p. 525-527.
+6.	Alcock, B.P., et al., CARD 2020: antibiotic resistome surveillance with the comprehensive antibiotic resistance database. Nucleic Acids Research, 2020. 48(D1): p. D517-D525.
+7.	Steinegger, M. and J. Söding, MMseqs2 enables sensitive protein sequence searching for the analysis of massive data sets. Nature Biotechnology, 2017. 35(11): p. 1026-1028.
+8.	Pradier, L., et al., PlasForest: a homology-based random forest classifier for plasmid detection in genomic datasets. BMC Bioinformatics, 2021. 22(1): p. 349.
+9.	Pellow, D., I. Mizrahi, and R. Shamir, PlasClass improves plasmid sequence classification. PLOS Computational Biology, 2020. 16(4): p. e1007781.
+10.	Kitts, P.A., et al., Assembly: a resource for assembled genomes at NCBI. Nucleic acids research, 2016. 44(D1): p. D73-D80.
+11.	Dixon, P., VEGAN, a package of R functions for community ecology. Journal of Vegetation Science, 2003. 14(6): p. 927-930.
+
+<br/>
+    '''.format(software=software, tpm=tpm)
+    with open(report, 'a', encoding='utf-8')as f:
+        f.write(reference)
+
+
+args = parse_arguments()
+summarize_path = args.summarize_path
+images = args.images_path
+name = args.name
+write_data(summarize_path, images, name)

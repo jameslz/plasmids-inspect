@@ -1,0 +1,41 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "Usage:perl $0 <samples>  <lib>" if(@ARGV != 2);
+
+my ($samples, $lib )         = @ARGV;
+
+my  @samples_t = ();
+
+load_sample();
+stats();
+
+exit;
+
+sub load_sample {
+
+    open (DATA, $samples)   || die "$!  \n";
+    while (<DATA>) {
+        
+        chomp;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0] if( -e qq{$lib/$its[0].fasta}) 
+        
+
+    }
+    close DATA;
+  
+}
+
+sub stats{
+
+    print qq{#sample\treads\n};
+    foreach my $sample (@samples_t) {
+        my $counts = qq{reads_counts $lib/$sample.fasta $sample};
+        system $counts;
+    }
+
+}

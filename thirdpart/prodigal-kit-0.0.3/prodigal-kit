@@ -1,0 +1,192 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Getopt::Std;
+use File::Basename;
+use Cwd 'abs_path';
+
+my $version = "0.0.3";
+
+my %opts = (n => 1000,
+            t => '40');
+getopts('n:t:', \%opts);
+
+&usage if (-t STDIN && @ARGV != 2);
+
+my  $nucl           =  shift @ARGV;
+my  $project        =  shift @ARGV;
+
+my  $num            =  $opts{n};
+my  $cpus           =  $opts{t};
+
+my  $runs           =  qq{$project/runs};
+my  $prodigal       =  qq{$project/prodigal};
+my  $report         =  qq{$project/report};
+
+my  $batch          =  1;
+my  $binaries       =  dirname( abs_path($0) ) . '/binaries';
+
+submit();
+
+exit;
+
+sub submit{
+
+    make_fs();
+    shuffle_run();
+    map_run();
+    reduce_run();
+    format_run();
+    auxiliary_run();
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $runs
+                          $prodigal
+                          $report};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub shuffle_run {
+
+    my $sh = qq{$runs/shuffle.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT shuffle();
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub shuffle{
+
+    my $cmd   = qq{$binaries/fastx-utils view     \
+                      $nucl                       \
+                   |$binaries/tsv-utils shuffle   \
+                      -                           \
+                   |$binaries/fastx-utils reorder \
+                      $nucl -                     \
+                   >$report/shuffle.fasta;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub map_run {
+
+    my $sh = qq{$runs/map.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    seqsplit();
+    foreach my $idx ( 1 .. $batch ){
+        print EXPORT prodigal( $idx );
+    }
+    close EXPORT;
+    
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p $cpus  "{}"\n};
+
+}
+
+sub seqsplit{
+
+    $batch = qx($binaries/fastx-utils partition $report/shuffle.fasta $num $prodigal/batch);
+
+}
+
+sub prodigal{
+
+    my $idx =  shift;
+    my $cmd = qq{$binaries/prodigal                     \
+                   -a $prodigal/batch_$idx.pep          \
+                   -d $prodigal/batch_$idx.fna          \
+                   -f gff                               \
+                   -m -q                                \
+                   -p meta                              \
+                   -i $prodigal/batch_$idx.fasta        \
+                   -o $prodigal/batch_$idx.gff\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+}
+
+sub reduce_run {
+
+    my $sh = qq{$runs/reduce.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $idx ( 1 .. $batch ){
+        print EXPORT qq{cat $prodigal/batch_$idx.pep | $binaries/seqtk seq -C -    >>$report/prodigal.pep ;\n};
+        print EXPORT qq{cat $prodigal/batch_$idx.fna | $binaries/seqtk seq -C -    >>$report/prodigal.fna ;\n};
+        print EXPORT qq{cat $prodigal/batch_$idx.gff | $binaries/prodigal-tk gff - >>$report/prodigal.gff ;\n};
+    }
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub format_run{
+  
+    my $sh = qq{$runs/format.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT gff2gtf();
+    print EXPORT gff2bed();
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub gff2bed{
+
+    my $cmd   = qq{$binaries/prodigal-tk bed            \
+                       $report/prodigal.gff             \
+                    >$report/prodigal.bed;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub gff2gtf{
+
+    my $cmd   = qq{$binaries/gffread                    \
+                       -T -o $report/prodigal.gtf       \
+                       $report/prodigal.gff;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub auxiliary_run {
+
+    my $sh    =  qq{$runs/auxiliary.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT qq{rm -rf $prodigal ;\n};
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub usage {
+
+  print STDERR qq(
+
+Program: prodigal-kit: predict ORF from a set of contigs. 
+Version: $version
+Contact: ZHANG LEI <zhanglei\@logictek.cn>\n
+Usage:   prodigal-kit [options] <nucl> <project>\n
+Options: -n INT   number of batch. default: [1000]
+         -t INT   number of threads, default: [40]
+
+);
+  exit;
+
+}

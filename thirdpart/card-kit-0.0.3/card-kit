@@ -1,0 +1,196 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Getopt::Std;
+use File::Basename;
+use Cwd 'abs_path';
+
+my $version = '0.0.3';
+
+my %opts = (c =>'40',
+            d=>'/biostack/database/card',
+            p=>'-e 1e-10 -c 0.4 --cov-mode 2 --min-seq-id 0.7');
+getopts('c:d:p:', \%opts);
+
+&usage if (-t STDIN && @ARGV != 2);
+
+my  $query          =  shift @ARGV;
+my  $project_home   =  shift @ARGV;
+
+my  $runs           =  qq{$project_home/runs};
+my  $report         =  qq{$project_home/report};
+my  $mmseqs         =  qq{$project_home/mmseqs};
+
+my  $binaries       =  dirname( abs_path($0) ) . '/binaries';
+my  $cpus           =  $opts{c};
+my  $db             =  $opts{d};
+my  $para           =  $opts{p};
+
+submit();
+exit;
+
+sub submit{
+
+    make_fs();
+    card_run();
+    links_run();
+    auxiliary_run();
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $report
+                          $runs
+                          $mmseqs};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub card_run{
+
+    my $sh    =  qq{$runs/card.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    printf EXPORT mmseqs();
+    printf EXPORT hits();
+    printf EXPORT annotation();
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub mmseqs {
+
+    my $cmd  = qq{mmseqs easy-search             \
+                    --threads $cpus              \
+                    --max-accept 1               \
+                    -s 7.5                       \
+                    $para                        \
+                    --db-load-mode 2             \
+                    --format-output query,target,fident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits,qcov \
+                    -v 1                         \
+                    $query                       \
+                    $db/mmseqs/card              \
+                    $mmseqs/mmseqs.txt           \
+                    $mmseqs/tmp;\n};
+
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub hits {
+
+    my $cmd =  qq{$binaries/blast-utils best_hsp     \
+                     $mmseqs/mmseqs.txt              \
+                  > $mmseqs/hits.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub annotation {
+
+    my $cmd =  qq{$binaries/tsv-utils definition    \
+                            -c 2 -t 'mechanism'     \
+                     $db/misc/mechanism.txt         \
+                     $mmseqs/hits.txt               \
+                  |$binaries/tsv-utils definition   \
+                             -c 2 -t 'drugs'        \
+                     $db/misc/drugs.txt -           \
+                  |$binaries/tsv-utils definition   \
+                             -c 2 -t 'family'       \
+                     $db/misc/family.txt -          \
+                  |$binaries/tsv-utils definition   \
+                              -c 2 -t 'aro'         \
+                     $db/misc/aro.txt -             \
+                  |$binaries/tsv-utils definition   \
+                     -c 2                           \
+                     -d " "                         \
+                     $db/misc/annotation.txt -      \
+                 |$binaries/tsv-utils add_headline  \
+                   "#qseqid\\tstitle\\tsymbols\\tfamily\\tdrugs\\tmechanism\\tpident\\tlength\\tmismatch\\tgapopen\\tqstart\\tqend\\tsstart\\tsend\\tevalue\\tbitscore\\tqcov" \
+                   -                                \
+                 > $report/annotation.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+} 
+
+
+sub links_run{
+    
+    my $sh    =  qq{$runs/bins.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $ontology ( qw/aro family drugs mechanism/) {
+        print EXPORT  links( $ontology );
+    }
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub links{
+    
+    my $ontology = shift;
+    my $cmd      = qq{cut -f1,2 $mmseqs/hits.txt      \
+                      |$binaries/tsv-utils annotation \
+                        -r -c 2                       \
+                        $db/misc/$ontology.txt -      \
+                      |$binaries/tsv-utils bins       \
+                        -t 3 -s 1 -                   \
+                      |grep -v "N/A"                  \
+                      >$report/$ontology-bins.txt ;\n};
+       $cmd      =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub auxiliary_run {
+
+    my $sh    =  qq{$runs/auxiliary.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT tsv2xlsx();
+    printf EXPORT qq{rm -rf $mmseqs/tmp\n};
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub tsv2xlsx {
+
+    my $cmd = qq{$binaries/tsv-utils tsv2xlsx          \
+                   $report/card.xlsx                   \
+                   annotation:$report/annotation.txt   \
+                   aro:$report/aro-bins.txt            \
+                   family:$report/family-bins.txt      \
+                   drugs:$report/drugs-bins.txt        \
+                   mechanism:$report/mechanism-bins.txt; \n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub usage {
+
+  printf STDERR qq(
+
+Program: card-kit: identify Antibiotic Resistance Genes 
+                   using CARD Protein Homolog Model
+Version: $version
+Contact: ZHANG LEI <zhanglei\@logicinformatics.com>\n
+Usage:   card-kit [options] <sequence> <project>\n
+Options: -c INT    CPU number, default: [40]
+         -d STR    databse location, default: [/biostack/databse/card]
+         -p STR    hit filter parameters, default: [-e 1e-10 -c 0.4 --cov-mode 2 --min-seq-id 0.7]\n\n);
+  exit;
+
+}

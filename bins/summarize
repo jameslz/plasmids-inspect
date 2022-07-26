@@ -1,0 +1,312 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ($config)        = @ARGV;
+my  %metadata       = ();
+
+profiling();
+
+my  $home           =  qq{$metadata{project_home}/$metadata{project_id}};
+my  $project_home   =  qq{$home/summarize};
+
+my  $runs           =  qq{$project_home/runs};
+my  $samples        =  qq{$project_home/samples};
+my  $stats          =  qq{$project_home/stats};
+
+my  $evaluation     =  qq{$home/evaluation/report};
+my  $trimming       =  qq{$home/trimming/report};
+my  $bmtagger       =  qq{$home/bmtagger/report};
+
+my  $plasmids       =  qq{$home/plasmids/};
+my  $card           =  qq{$home/annotation/card};
+my  $amr            =  qq{$home/plasmids/amr};
+
+my  $profile        =  qq{$home/plasmids/profile/report};
+my  $inspect        =  qq{$home/plasmids/inspect};
+my  $taxonomy       =  qq{$home/plasmids/taxonomy};
+
+my  $utils          =  dirname( abs_path($0) ) . '/../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../binaries';
+
+my  @samples_t      = ();
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+if(!$dry_run){
+    if(-e $project_home){
+      print qq{rm -rf $project_home ;\n};
+      system qq{rm -rf $project_home};
+    }
+}
+
+submit();
+
+exit;
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    summarize_run();
+    portray_run();
+
+}
+
+sub profiling {
+
+    open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+
+    while(<PROFILE>){
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    }
+
+    close PROFILE;
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}})   || die "[ERR]: can't open $metadata{mapping_file}. \n";
+    
+    while (<PROFILE>) {
+        $_ =~ s/\s+$//;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+    }
+    close PROFILE;
+ 
+    if(!exists $metadata{mapping_file}){
+        print STDERR qq{[ERR]: please specify the mapping_file data.!\n};
+        exit;
+    }
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $stats
+                          $runs
+                          $samples};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+}
+
+sub summarize_run {
+
+    my $sh = qq{$runs/summarize.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+        
+    print EXPORT  qual_stats();
+    print EXPORT  assembly_stats();
+    print EXPORT  amr_stats();
+    print EXPORT  diversity_stats();
+    print EXPORT  abundance_stats();
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p 1 "{}"\n} if(!$dry_run);
+
+}
+
+sub qual_stats {
+
+    my @t  = ();
+    push @t, qq{cp $evaluation/sequencing.stats.txt $stats/sequencing.stats.txt ;\n};
+
+    if(!-e $bmtagger){
+        push @t, qq{cp $trimming/quality_control.stats.txt $stats/quality_control.stats.txt ;\n};
+    }else{
+        push @t, qq{cp $bmtagger/quality_control.stats.txt $stats/quality_control.stats.txt ;\n};
+    }
+    return join("", @t);
+
+}
+
+sub assembly_stats {
+    my $cmd = qq{cp -r $home/assembly/report $stats/metaquast ;\n};
+    return $cmd;
+}
+
+sub amr_stats {
+
+    my @t  = ();
+    push @t, qq{mkdir -p $stats/amr/{plasmids,metagenome} ;\n};
+    push @t, qq{cp -r $card/stacks  $stats/amr/metagenome/ ;\n};
+    push @t, qq{cp -r $card/stats  $stats/amr/metagenome/ ;\n};
+    push @t, qq{cp -r $amr/stacks  $stats/amr/plasmids/ ;\n};
+    push @t, qq{cp -r $amr/stats  $stats/amr/plasmids/ ;\n};
+
+    return join("", @t);
+
+}
+
+sub diversity_stats {
+
+    my @t  = ();
+    push @t, qq{mkdir -p $stats/diversity;\n};
+    push @t, qq{cp -r $plasmids/taxonomy/stats     $stats/diversity/ ;\n};
+    push @t, qq{cp -r $plasmids/diversity/barplot  $stats/diversity/ ;\n};
+    push @t, qq{cp -r $plasmids/diversity/heatmap  $stats/diversity/ ;\n};
+    push @t, qq{cp -r $plasmids/beta/{upgma,pcoa,pca,nmds,distmx}  $stats/diversity/ ;\n};
+
+    return join("", @t);
+
+}
+
+sub abundance_stats {
+
+    my @t  = ();
+    push @t, qq{mkdir -p $stats/abundance;\n};
+    push @t, qq{cp -r $plasmids/abundance/barplot  $stats/abundance/ ;\n};
+    push @t, qq{cp -r $plasmids/abundance/heatmap  $stats/abundance/ ;\n};
+    push @t, qq{cp -r $plasmids/abundance/mdr  $stats/abundance/ ;\n};
+    push @t, qq{cp -r $plasmids/abundance/matrix  $stats/abundance/ ;\n};
+
+    return join("", @t);
+
+}
+
+sub portray_run {
+
+    my $sh = qq{$runs/portray.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+        
+    foreach my $sample ( @samples_t ) {       
+        print EXPORT qq{mkdir -p $samples/$sample/amr/{plasmids,metagenome} ;\n};
+        print EXPORT qq{mkdir -p $samples/$sample/refseq ;\n};
+        print EXPORT qq{mkdir -p $samples/$sample/orfs ;\n};
+        print EXPORT sequencing_summary( $sample );
+        print EXPORT qstats_summary( $sample );
+        print EXPORT plasmids_summary( $sample );
+        print EXPORT refseq_summary( $sample );
+        print EXPORT profile_summary( $sample );
+        print EXPORT taxonomy_summary( $sample );
+        print EXPORT amr_summary( $sample );
+        print EXPORT abundance_summary( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+
+}
+
+sub sequencing_summary {
+ 
+    my $sample  = shift;
+    
+    my $cmd     = qq{cp $evaluation/$sample.sequencing.stats.txt       \
+                        $samples/$sample/sequencing.stats.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub qstats_summary {
+    
+    my $sample = shift;
+    my $db  = (!-e $bmtagger) ? $trimming : $bmtagger;
+
+    my $cmd = qq{cp $db/$sample.qc.stats.txt \
+                    $samples/$sample/quality_control.stats.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub taxonomy_summary {
+
+    my $sample = shift;
+    my @t    = ();
+
+    my $target = qq{$samples/$sample/taxonomy};
+    push @t, qq{mkdir -p $target/{stats,krona,lollipop} ;\n};
+    push @t, qq{cp  $taxonomy/taxonomy/$sample.*  $target/stats ;\n};
+    push @t, qq{cp  $taxonomy/krona/$sample.* $target/krona ;\n};
+    push @t, qq{cp -r $taxonomy/lollipop/$sample/* $target/lollipop ;\n};
+
+    return join("", @t);
+
+}
+
+sub profile_summary {
+
+    my $sample = shift;
+    my $cmd    =qq{cp $profile/$sample.* $samples/$sample ;\n};
+    return $cmd;
+
+}
+
+sub plasmids_summary {
+
+    my $sample = shift;
+    my @t  = ();
+    
+    push @t, qq{cp $plasmids/inspect/contigs/$sample.fasta  $samples/$sample/$sample.fasta;\n};
+    foreach my $type (qw/pep fna gff bed gtf/){
+        push @t, qq{cp $plasmids/inspect/orfs/$sample.$type  $samples/$sample/orfs/$sample.$type;\n};
+    }
+
+    return join("", @t);
+
+}
+
+sub abundance_summary {
+
+    my $sample = shift;
+    my @t      = ();
+
+    my $target = qq{$samples/$sample/abundance};
+    push @t, qq{mkdir -p $target ;\n};
+
+    push @t, qq{cp -r $plasmids/abundance/lollipop/$sample $target/lollipop ;\n};
+    push @t, qq{cp -r $plasmids/abundance/stats/$sample $target/stats ;\n};
+
+    return join("", @t);
+
+}
+
+sub refseq_summary {
+
+    my $sample = shift;
+    my @t  = ();
+    
+    push @t, qq{cp $plasmids/refseq/report/$sample.coverage.txt  $samples/$sample/refseq/$sample.coverage.txt;\n};
+    push @t, qq{cp $plasmids/refseq/report/$sample.refseq.txt  $samples/$sample/refseq/$sample.refseq.txt;\n};
+
+
+    return join("", @t);
+
+}
+
+sub amr_summary {
+
+    my $sample = shift;
+    my @t      = ();
+
+    my $target = qq{$samples/$sample/amr};
+    push @t, qq{mkdir -p $target/plasmids/bins ;\n};
+    push @t, qq{mkdir -p $target/metagenome/bins ;\n};
+
+    push @t, qq{cp -r $card/pies/$sample $target/metagenome/pies ;\n};
+    push @t, qq{cp -r $amr/pies/$sample $target/plasmids/pies ;\n};
+    push @t, qq{cp -r $card/abundance/$sample $target/metagenome/abundance ;\n};
+    push @t, qq{cp -r $amr/abundance/$sample $target/plasmids/abundance ;\n};
+    push @t, qq{cp -r $amr/report/$sample.card.annotation.txt $target/plasmids/$sample.card.annotation.txt ;\n};
+    push @t, qq{cp -r $card/annotation/$sample.*.txt $target/metagenome/ ;\n};
+    push @t, qq{cp -r $amr/annotation/$sample.*.txt $target/plasmids/ ;\n};
+    push @t, qq{cp -r $amr/distribution/$sample $target/distribution ;\n};
+
+    return join("", @t);
+
+}

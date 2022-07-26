@@ -1,0 +1,53 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "Usage:perl $0 <samples> <bams>" if(@ARGV != 2);
+
+my ($samples, $bams ) = @ARGV;
+
+my  @samples_t = ();
+
+load_sample();
+load_log();
+
+exit;
+
+sub load_sample {
+
+    open (DATA, $samples)   || die "$!  \n";
+    while (<DATA>) {
+        
+        chomp;
+        next if (/^#/ || /^$/);
+        my @its = split /\s+/, $_;
+        push @samples_t, $its[0];
+        
+
+    }
+    close DATA;
+  
+}
+
+sub load_log{
+
+  print qq{#sample\talign reads\talign rate(%)\n};
+
+  foreach my $sample ( @samples_t ) {
+     my $align = qq{$bams/$sample.log};
+     open (DATA, $align )   || die " $align $!  \n";
+     local $/ = undef;
+     while (<DATA>) {
+          chomp;
+          #one reported alignment: 4506208 (71.31%)
+          my ($reads ) = $_ =~ /(\d+) reads;/;
+          my ($align_rate) = $_=~/\n(\S+)% overall alignment rate/ms;
+          print qq{$sample\t$reads\t$align_rate\n};
+     }
+     local $/ = "\n";
+     close DATA;
+  
+  }
+
+}

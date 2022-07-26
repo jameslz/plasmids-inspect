@@ -1,0 +1,346 @@
+#!/usr/bin/perl  -w
+
+use strict;
+use warnings;
+use Switch;
+use File::Basename;
+use Cwd 'abs_path';
+
+my $usage = qq{
+
+Usage: plasmids-inspect  <metadata> <cmd>
+
+Commands
+  -- qc
+     evaluation       quality evaluation for raw sequence.
+     trimming         trimming adaptor and low quality sequence.
+     bmtagger         remove host sequence.
+  ** qc_wf            pack all the qc modules to one package.
+
+  -- assembly
+     metaspades       metagenome assembly.
+
+  -- annotation
+     prodigal          ORF prediction.
+     quant             ORF abundance quantify(counts and TPM).
+     card              AMR gene annotation.
+     coverage          Contig abundance quantify(counts and TPM) with CoverM
+     kallisto          Contig abundance quantify(counts and TPM) with kallisto.
+     annotation_wf     pack all the annotation modules to package.
+
+  -- plasmid analysis
+     plasforest        homology-based random forest classifier for plasmid detection.
+     plasclass         predicted plasmids from metagenome assembled contigs.
+     inspect           plasmids in metagenome assembly dataset. 
+     refseq            refseq alignment and taxonomy annotation.
+     profile           annotation for plasmid contigs.
+     taxonomy          taxonomy distribution for plasmid contigs.
+     diversity         diversity for plasmid taxonomy.
+     beta              beta diversity analysis for plasmid taxonomy.
+     abundance         abundance for plasmid diversity.
+     amr               AMR gene in plasmids.
+  ** plasmid_wf        pack all the plasmids modules to package.
+
+  -- pipeline
+  ** pipeline         pipeline run.
+
+  -- summary and report  
+     summarize
+     report
+
+Examples:
+    plasmids-inspect  metadata.txt  evaluation
+    plasmids-inspect  metadata.txt  metaspades
+    plasmids-inspect  metadata.txt  pipeline
+
+version: 0.0.1
+
+Licenced:
+(c) 2021-2022 - LEI ZHANG
+Logic Informatics Co.,Ltd.
+zhanglei\@logicinformatics.com
+
+};
+
+if(@ARGV < 2){ print $usage; exit}
+
+my $bins     =   dirname($0) . "/bins";
+my $metadata =   abs_path( (shift @ARGV) );
+my $cmd      =   shift @ARGV;
+my $options  =   ' ';
+   $options  =   join(" ", @ARGV) if(@ARGV > 0 );
+
+my %metadata = ();
+profiling();
+my $home     =   $metadata{project_home};
+my $logs     =   qq{$home/logs};
+
+open (EXPORT, qq{>$home/run.sh}) || die "$!";
+
+my $fh = *EXPORT;
+
+switch($cmd){
+
+    case 'evaluation'            {print EXPORT evaluation();}
+    case 'trimming'              {print EXPORT trimming();}
+    case 'bmtagger'              {print EXPORT bmtagger();}
+    case 'qc_wf'                 {print EXPORT qc_wf();}
+
+    case 'metaspades'            {print EXPORT metaspades();}
+
+    case 'prodigal'              {print EXPORT prodigal();}
+    case 'quant'                 {print EXPORT quant();}
+    case 'coverage'              {print EXPORT coverage();}
+    case 'kallisto'              {print EXPORT kallisto();}
+    case 'card'                  {print EXPORT card();}
+    case 'annotation_wf'         {print EXPORT annotation_wf();}
+
+    case 'plasforest'            {print EXPORT plasforest();}
+    case 'plasclass'             {print EXPORT plasclass();}
+    case 'inspect'               {print EXPORT inspect();}
+    case 'refseq'                {print EXPORT refseq();}
+    case 'profile'               {print EXPORT profile();}
+    case 'taxonomy'              {print EXPORT taxonomy();}
+    case 'diversity'             {print EXPORT diversity();}
+    case 'beta'                  {print EXPORT beta();}
+    case 'abundance'             {print EXPORT abundance();}
+    case 'amr'                   {print EXPORT amr();}
+    case 'plasmid_wf'            {print EXPORT plasmid_wf();}
+
+    case 'pipeline'              {print EXPORT pipeline();}
+    case 'summarize'             {print EXPORT summarize();}
+    case 'report'                {print EXPORT report();}
+
+    else                         {combine( $fh )};
+
+}
+
+print EXPORT  utils();
+close EXPORT;
+
+system( qq{mkdir -p $logs/{qc,assembly,annotation,plasmids} && bash $home/run.sh} );
+
+exit;
+
+sub profiling{
+
+    open( PROFILE,  $metadata )   || die "[ERR]: can't open $metadata. \n";
+    while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    
+    } 
+    close PROFILE;
+
+}
+
+sub utils {
+
+    my $utils = qq{if [ -f  "$home/run.sh" ]; then rm "$home/run.sh"; fi ;\n};
+    return $utils;
+
+}
+
+sub evaluation {
+    my $cmd = qq{$bins/qc/evaluation  $metadata &>$logs/qc/evaluation.txt ;\n};
+    return $cmd;
+}
+
+sub trimming {
+    my $cmd = qq{$bins/qc/trimming  $metadata &>$logs/qc/trimming.txt ;\n};
+    return $cmd;
+}
+
+sub bmtagger {
+    my $cmd = qq{$bins/qc/bmtagger $metadata &>$logs/qc/bmtagger.txt ;\n};
+    return $cmd;
+}
+
+sub metaspades {
+    my $cmd = qq{$bins/assembly/metaspades $metadata &>$logs/assembly/metaspades.txt ;\n};
+    return $cmd;
+}
+
+sub prodigal {
+    my $cmd = qq{$bins/annotation/prodigal $metadata &>$logs/annotation/prodigal.txt ;\n};
+    return $cmd;
+}
+
+sub quant {
+    my $cmd = qq{$bins/annotation/quant $metadata &>$logs/annotation/quant.txt ;\n};
+    return $cmd;
+}
+
+sub coverage {
+    my $cmd = qq{$bins/annotation/coverage $metadata &>$logs/annotation/coverage.txt ;\n};
+    return $cmd;
+}
+
+sub kallisto {
+    my $cmd = qq{$bins/annotation/kallisto $metadata &>$logs/annotation/kallisto.txt ;\n};
+    return $cmd;
+}
+
+sub card {
+    my $cmd = qq{$bins/annotation/card $metadata &>$logs/annotation/card.txt ;\n};
+    return $cmd;
+}
+
+sub profile {
+    my $cmd = qq{$bins/plasmids/profile $metadata &>$logs/plasmids/profile.txt ;\n};
+    return $cmd;
+}
+
+sub plasclass {
+    my $cmd = qq{$bins/plasmids/plasclass $metadata &>$logs/plasmids/plasclass.txt ;\n};
+    return $cmd;
+}
+
+sub plasforest {
+    my $cmd = qq{$bins/plasmids/plasforest $metadata &>$logs/plasmids/plasforest.txt ;\n};
+    return $cmd;
+}
+
+sub inspect {
+    my $cmd = qq{$bins/plasmids/inspect $metadata &>$logs/plasmids/inspect.txt ;\n};
+    return $cmd;
+}
+
+sub refseq {
+    my $cmd = qq{$bins/plasmids/refseq $metadata &>$logs/plasmids/refseq.txt ;\n};
+    return $cmd;
+}
+
+sub taxonomy {
+    my $cmd = qq{$bins/plasmids/taxonomy $metadata &>$logs/plasmids/taxonomy.txt ;\n};
+    return $cmd;
+}
+
+sub diversity {
+    my $cmd = qq{$bins/plasmids/diversity $metadata &>$logs/plasmids/diversity.txt ;\n};
+    return $cmd;
+}
+
+sub beta {
+    my $cmd = qq{$bins/plasmids/beta $metadata &>$logs/plasmids/beta.txt ;\n};
+    return $cmd;
+}
+
+sub abundance {
+    my $cmd = qq{$bins/plasmids/abundance $metadata &>$logs/plasmids/abundance.txt ;\n};
+    return $cmd;
+}
+
+sub amr {
+    my $cmd = qq{$bins/plasmids/amr $metadata &>$logs/plasmids/amr.txt ;\n};
+    return $cmd;
+}
+
+sub qc_wf {
+    
+    my @cmds = ();
+    foreach my $p (split /,/, "evaluation,trimming,bmtagger") {
+       push @cmds, qq{$bins/qc/$p $metadata &>$logs/qc/$p.txt ;\n};
+    }
+    return join("", @cmds);
+}
+
+sub annotation_wf {
+    
+   my @cmds = ();
+    
+   foreach my $p (split /,/, "prodigal,quant,coverage,card") {
+     push @cmds, qq{$bins/annotation/$p $metadata &>$logs/annotation/$p.txt ;\n};
+   }
+   return join("", @cmds);
+
+}
+
+sub plasmid_wf {
+    
+   my @cmds = ();
+    
+   foreach my $p (split /,/, "plasforest,plasclass,inspect,refseq,profile,taxonomy,diversity,beta,amr,abundance") {
+     push @cmds, qq{$bins/plasmids/$p $metadata &>$logs/plasmids/$p.txt ;\n};
+   }
+        
+   return join("", @cmds);
+}
+
+sub summarize {
+
+   my $cmd =  qq{$bins/summarize $metadata &>$logs/summarize.txt ;\n};
+   return $cmd;
+
+}
+
+sub report {
+
+   my $cmd =  qq{$bins/report $metadata &>$logs/report.txt ;\n};
+   return $cmd;
+
+}
+
+sub pipeline {
+    
+    my @cmds = ();
+    foreach my $p (split /,/, "evaluation,trimming,bmtagger") {
+       push @cmds, qq{$bins/qc/$p $metadata &>$logs/qc/$p.txt ;\n};
+    }
+
+    push @cmds, qq{$bins/assembly/metaspades $metadata &>$logs/assembly/metaspades.txt ;\n};
+
+    foreach my $p (split /,/, "prodigal,quant,coverage,card") {
+      push @cmds, qq{$bins/annotation/$p $metadata &>$logs/annotation/$p.txt ;\n};
+    }
+
+    foreach my $p (split /,/, "plasforest,plasclass,inspect,refseq,profile,taxonomy,diversity,beta,amr,abundance") {
+      push @cmds, qq{$bins/virome/$p $metadata &>$logs/virome/$p.txt ;\n};
+    }
+
+    return join("", @cmds);
+}
+
+sub combine{
+    
+    my $fh = shift;
+    foreach my  $it (split /,/, $cmd) {
+        switch( $it ){
+
+            case 'evaluation'            {print $fh evaluation();}
+            case 'trimming'              {print $fh trimming();}
+            case 'bmtagger'              {print $fh bmtagger();}
+            case 'qc_wf'                 {print $fh qc_wf();}
+
+            case 'metaspades'            {print $fh metaspades();}
+
+            case 'prodigal'              {print $fh prodigal();}
+            case 'quant'                 {print $fh quant();}
+            case 'coverage'              {print $fh coverage();}
+            case 'kallisto'              {print $fh kallisto();}
+            case 'card'                  {print $fh card();}
+            case 'annotation_wf'         {print $fh annotation_wf();}
+
+            case 'plasforest'            {print $fh plasforest();}
+            case 'plasclass'             {print $fh plasclass();}
+            case 'inspect'               {print $fh inspect();}
+            case 'refseq'                {print $fh refseq();}
+            case 'profile'               {print $fh profile();}
+            case 'taxonomy'              {print $fh taxonomy();}
+            case 'diversity'             {print $fh diversity();}
+            case 'beta'                  {print $fh beta();}
+            case 'amr'                   {print $fh amr();}
+            case 'abundance'             {print $fh abundance();}
+            case 'plasmid_wf'            {print $fh plasmid_wf();}
+
+            case 'pipeline'              {print $fh pipeline();}
+            case 'summarize'             {print $fh summarize();}
+            case 'report'                {print $fh report();}
+            else                         {warn "No such '$cmd' CMD!\n"; exit(0)};
+        }
+    }
+}

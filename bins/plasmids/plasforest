@@ -1,0 +1,150 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ( $config )           = @ARGV;
+
+my  %metadata            = ();
+profiling();
+
+my  $project_home        =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/plasforest};
+
+my  $plasmids            =  qq{$project_home/plasmids};
+my  $runs                =  qq{$project_home/runs};
+my  $report              =  qq{$project_home/report};
+my  $contigs             =  qq{$project_home/contigs};
+
+my  $datasets            =  qq{$metadata{project_home}/$metadata{project_id}/assembly/contigs};
+
+my  @samples_t           = ();
+
+my  $utils               =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries            =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $dry_run             =  0;
+    $dry_run             =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub profiling{
+
+    open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+          
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+    
+    } 
+    close PROFILE;
+
+}
+
+sub submit{
+  
+    mapping_file();
+    make_fs();
+    plasforest_run();
+    inspect_run();
+
+}
+
+sub mapping_file{
+
+    open (PROFILE, qq{$metadata{mapping_file}})   || die "[ERR]: can't open $metadata{mapping_file}. \n";
+    while (<PROFILE>) {
+    
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\s+/,$_;
+        push @samples_t , $its[0];
+
+    }
+    close PROFILE;
+
+}
+
+sub make_fs {
+   
+    my $cmd = qq{mkdir -p $runs
+                          $plasmids
+                          $contigs
+                          $report};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub plasforest_run {
+
+    my $sh    =  qq{$runs/plasforest.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  plasforest( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+}
+
+sub plasforest {
+     
+    my $sample =  shift;
+    my $cmd    = qq{PlasForest.py                         \
+                       -i $datasets/$sample.fasta         \
+                       --threads $metadata{cpus}          \
+                       -b                                 \
+                       -o $plasmids/$sample.csv;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub inspect_run {
+
+    my $sh    =  qq{$runs/inspect.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  inspect( $sample );
+        print EXPORT  subseq( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 2  -p  $metadata{parallel}  "{}"\n} if(!$dry_run);
+}
+
+sub inspect {
+    
+    my $sample    =  shift;
+    my $cmd       =  qq{$binaries/csv2tsv                    \
+                            $plasmids/$sample.csv            \
+                        |$binaries/tsv-utils select          \
+                           -f2 - Plasmid                     \
+                        >$contigs/$sample.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub subseq {
+    
+    my $sample    =  shift;
+    my $cmd       =  qq{cut -f1 $contigs/$sample.txt         \
+                        |$binaries/fastx-utils subseq        \
+                           $datasets/$sample.fasta -         \
+                        >$contigs/$sample.fasta ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}

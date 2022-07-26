@@ -1,0 +1,244 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+my ($config)        = @ARGV;
+
+my  %metadata       = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/annotation/coverage};
+
+my  $bams           =  qq{$project_home/bams};
+my  $runs           =  qq{$project_home/runs};
+my  $report         =  qq{$project_home/report};
+my  $libs           =  qq{$project_home/libs};
+my  $quant          =  qq{$project_home/quant};
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $contigs        =  qq{$metadata{project_home}/$metadata{project_id}/assembly/contigs};
+my  $trimming       =  (-e qq{$metadata{project_home}/$metadata{project_id}/bmtagger} ) ? 'bmtagger' : 'trimming';
+my  $datasets       =  qq{$metadata{project_home}/$metadata{project_id}/$trimming/reads};
+
+if(!-e $datasets){
+    print STDERR "[ERR]: please provide contigs for alignment! ;\n";
+    exit;
+}
+
+my  @samples_t      =  ();
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+exit;
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    align_run();
+    stats_run();
+    coverm_run();
+    auxiliary_run();
+
+}
+
+sub profiling {
+
+    open( PROFILE, $config ) || die "[ERR]: can't open $config. \n";
+    while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+
+    } 
+    close PROFILE;
+
+}
+
+sub mapping_file {
+
+    open (PROFILE, qq{$metadata{mapping_file}}) || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;
+        push @samples_t , $its[0];
+
+    }
+    close PROFILE;
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $report
+                          $runs
+                          $bams
+                          $quant
+                          $libs};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub align_run {
+
+    my $sh  =  qq{$runs/align.sh};   
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+    
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  build( $sample );
+        print EXPORT  align( $sample );
+        print EXPORT  qq{$binaries/samtools index $bams/$sample.bam ;\n};
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 3 -p 1 "{}"} if(!$dry_run);
+
+}
+
+sub build {
+
+    my $sample  = shift; 
+    
+    my $cmd     = qq{bowtie2-build                      \
+                        --threads $metadata{cpus}       \
+                        $contigs/$sample.fasta          \
+                        $libs/$sample ;\n};
+      $cmd      =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub align {
+
+    my $sample  = shift;
+    
+    my $cmd     = qq{bowtie2                            \
+                        -X 1000                         \
+                        --end-to-end                    \
+                        --very-sensitive  --mm          \
+                        --reorder                       \
+                        -t -p $metadata{cpus}           \
+                        -x $libs/$sample                \
+                        -1 $datasets/$sample.R1.fastq   \
+                        -2 $datasets/$sample.R2.fastq   \
+                        2>$bams/$sample.log             \
+                    |$binaries/samtools view -bS        \
+                        -F12                            \
+                        -\@$metadata{cpus}              \
+                        -T $contigs/$sample.fasta -     \
+                    |$binaries/samtools sort            \
+                        -\@$metadata{cpus}              \
+                        -o  $bams/$sample.bam ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stats_run {
+
+    my $sh = qq{$runs/stats.sh};
+    open(EXPORT, qq{>$sh})|| die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT align_rate( );
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v -nlines 1 -p 1 "{}"} if(!$dry_run);
+
+}
+
+sub align_rate {
+
+    my $cmd = qq{$utils/align_rate                      \
+                    $metadata{mapping_file}             \
+                    $bams                               \
+                >$report/align_rate.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub coverm_run {
+
+    my $sh    =  qq{$runs/coverm.sh};
+    open (EXPORT, qq{>$sh}) || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  coverm( $sample );
+        print EXPORT  abundance( $sample );
+        print EXPORT  quant( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 1  -p  1 "{}"} if(!$dry_run);
+
+}
+
+sub coverm {
+     
+    my $sample  = shift;
+    my $para    = (exists $metadata{coverm_para} ) ? $metadata{coverm_para} :
+                                                         "";
+    my $cmd     = qq{$binaries/coverm contig           \
+                        -b $bams/$sample.bam           \
+                        --exclude-supplementary        \
+                        -p minimap2-sr                 \
+                        -m length count tpm rpkm covered_fraction \
+                        -t $metadata{cpus}             \
+                     |tail -n +3                       \
+                     |$binaries/tsv-utils add_headline \
+                       "#contig_id\\tlength\\tcount\\ttpm\\trpkm\\tcovered_fraction" - \
+                    >$quant/$sample.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub abundance {
+
+    my $sample  = shift;
+    my $cmd     = qq{$binaries/tabtk cut               \
+                        -r -f1,2,3,4                   \
+                        $quant/$sample.txt             \
+                    >$report/$sample.txt ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub quant {
+
+    my $sample  = shift;
+    my $cmd     = qq{$binaries/tabtk cut               \
+                        -r -f1,4                       \
+                        $quant/$sample.txt             \
+                    >$report/$sample.abundance.annotation.txt ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+
+}
+
+sub auxiliary_run {
+
+    my $sh    =  qq{$runs/auxiliary.sh}; 
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    printf EXPORT qq{rm -rf $libs \n};
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}

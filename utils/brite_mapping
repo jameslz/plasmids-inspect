@@ -1,0 +1,241 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use GD;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "[Usage]:\n\tperl $0  <ko_bins> <pathway_bin>  <project_home>" if ( scalar @ARGV != 3 );
+
+my ( $ko_bins, $pathway_bin, $project_home)   = @ARGV;
+
+my $library      = dirname( abs_path($0) ) . '/../db/pathway';
+my $pathway      = qq{$project_home/pathway};
+
+my %ko_tab      = (); 
+my %pathway_tab = ();
+
+submit();
+exit;
+
+
+sub submit{
+
+   make_fs();
+   utils();
+   load_ko_bins();
+   load_pathway_bins();
+   index_pages();
+   draw();
+
+}
+
+sub make_fs {
+    
+    my $make_fs = qq{mkdir -p  $pathway };
+    system $make_fs;
+
+}
+
+sub utils {
+
+    my $utils = qq{cp  -r $library/images  $library/css  $library/js  $project_home};
+    system $utils;
+
+}
+
+sub load_ko_bins {
+
+    open( DATA, $ko_bins ) || die "$!";
+    while (<DATA>) {    
+        chomp;
+        next if(/^#/);
+        my @its       = split /\t/, $_;
+        my ($ko)      = $its[0] =~ /^(\S+)/;
+
+        foreach my $protein ( split /,/ , $its[-1] ) {
+            $ko_tab{ $ko }{ $protein } = ();
+        }
+    }
+    close DATA;
+
+}
+
+
+sub load_pathway_bins {
+
+    open( DATA, $pathway_bin ) || die "$!";
+    while (<DATA>) {    
+        chomp;
+        next if(/^#/);
+        my @its       = split /\t/, $_;
+        my ($pathway)  = $its[0] =~/^map(\d+)/;
+        $pathway_tab{ $pathway } = $its[1];
+    }
+    close DATA;
+
+}
+
+sub draw {
+
+    opendir( KO, $library ) || die "$!";
+    while ( my $pathway_map = readdir( KO ) ) {
+
+        next if ( $pathway_map !~ /^\w+.html$/ );
+        my ($pathway_name) = $pathway_map =~ /^(\w+)/;
+        my $im = ();
+        next if ( ! -e qq{$library/$pathway_name.png} );
+
+        $im = newFromPng GD::Image( qq{$library/$pathway_name.png}, 1 );
+        my ( $white, $black, $default );
+
+        $white = $im->colorAllocate( 255, 255, 255 );
+        $black = $im->colorAllocate(   0,   0,   0 );
+
+        $im->transparent($white);
+        $im->interlaced('true');
+
+        open( PATH,   qq{$library/$pathway_map} ) || die "$!";
+        open( EXPORT, qq{>$pathway/$pathway_map}           ) || die "$!";
+
+        while ( my $lines = <PATH> ) {
+
+            if ( $lines  =~ /^<area shape=/ ) {
+                
+                $lines =~ s/\t/ /g;
+
+                my ($title, $endTag) = ("", '/>');
+
+                if ( $lines =~ /title=\"(.+)\"/ ) {
+                    $title = $1;
+                    $title =~ s/ /\&nbsp/g;
+                }
+
+                my @data = split /\s+/, $lines;
+
+                if ( $lines      =~ /\/dbget-bin\/www_bget\?K\d{5}/ && $lines  =~ /shape\=rect/ ) {
+
+                    my ( $location, $kos, $url ) = ( $data[2], $data[3], $lines  );
+
+                    $location =~ s/coords=//;
+                    $kos      =~ s/(href=\"\/dbget-bin\/www_bget\?)|\"|>//g;
+
+                    my ( $tag, $display )  = ko_mapping( $kos, \%ko_tab );
+					
+					if ( $tag ) {
+						$data[3] =~ s/href\=\"/href\=\"http:\/\/www\.genome\.jp/;
+						
+						$url = $data[0] . ' ' . $data[1] . ' ' . $data[2] . ' ' . $data[3] . ' ' . ' onmouseover="showtip(this,event,\'' . "$title\<br\>" . $display . '\')"' . qq( onmouseout="hidetip()" />);
+						my ( $kx1, $ky1, $kx2, $ky2 ) = split /,/, $location;
+						$default   = $im->colorAllocateAlpha( 255, 0, 0, 60 );	
+						$im->filledRectangle( $kx1, $ky1, $kx2, $ky2, $default );		
+					    print  EXPORT $url;
+
+                    }else{
+                        $lines =~ s/href=\"/href=\"http:\/\/www\.genome\.jp/;
+                        print  EXPORT $lines;
+                    }
+                } else {
+                    $lines =~ s/href=\"/href=\"http:\/\/www\.genome\.jp/;
+                    print  EXPORT $lines;
+                }
+
+            }else{
+                
+                if( $lines =~ /<img src="\/kegg\/pathway\/.+?" usemap="#mapdata" border="0" \/>/){
+                    $lines = qq{<img src="$pathway_name.png" usemap="#mapdata" border="0" \/>};
+                }
+                    $lines =~ s/href="\/css\//href="css\//;
+                    $lines =~ s/src="\/js\//src="js\//;                
+                    $lines =~ s/href="\/css\//href="..\/css\//;
+                    $lines =~ s/src="\/js\//src="..\/js\//;
+                    $lines =~ s/\/Fig\/bget\/kegg3.gif/..\/images\/kegg3.gif/;
+                    $lines =~ s/\/kegg-bin/http:\/\/www\.genome\.jp\/kegg-bin/;
+                    $lines =~ s/\/dbget-bin/http:\/\/www\.genome\.jp\/dbget-bin/;
+                    $lines =~ s/href="\/kegg/href="http:\/\/www\.genome\.jp\/kegg/;
+                    $lines =~ s/\/kegg\/tool/http:\/\/www\.genome\.jp\/kegg\/tool/;
+
+                my $mouseover_js =qq{
+                    <script type="text/javascript" language="JavaScript" src="../js/mv.js"></script>
+                    <script type="text/javascript" language="JavaScript1.2" src="../js/popupmenu2_7loader.js"></script>
+                    <script language="JavaScript1.2" src="../js/popupmenu2_7iens6.js" type="text/javascript"></script>
+                    <div id="PopUpMenu2viewer" style="overflow: hidden; background-color: transparent; width: 1px; height: 1px; margin-left: 0pt; visibility: hidden; position: absolute; z-index: 1; left: 189px; top: 209px;" onmouseover="PopUpMenu2_ClearTime();" onmouseout="PopUpMenu2_Hide_Layer()"></div>};
+                
+                $mouseover_js =~ s/\n\s+/\n/g;
+
+                if($lines =~ /<\/head>/){
+                    print EXPORT qq{\n$mouseover_js\n$lines};
+                }
+                print EXPORT  $lines;
+            }
+        }
+        close PATH;
+        close EXPORT;
+
+        open( IMG, ">$pathway/$pathway_name.png" ) || die "$.\n";
+        binmode IMG;
+        print IMG $im->png;
+        close IMG;
+        
+    }
+    closedir KO;
+}
+
+sub ko_mapping {
+
+	my ( $kos, $tabl_obj ) = @_;
+
+	my @mouseover            = ( );
+	my ($tag, $url)          = (0, 0);
+	my $seps                 = '&nbsp;' x 10;
+
+	foreach my $ko_entry ( split /\+/, $kos ) {
+		next if ( ! exists $$tabl_obj{$ko_entry} );
+		push @mouseover, $ko_entry. $seps . "counts:". (scalar keys %{$$tabl_obj{$ko_entry}});
+		$tag++;
+	}
+    $url = join( "<br>", @mouseover );
+	return ( $tag,  $url );
+}
+
+sub index_pages{
+
+    open (DAT, qq{$library/kegg_pathway.html}) || die "$!";
+    open (EXPORT, qq{>$project_home/kegg_index.html}) || die "$!";
+    
+    my $tags  = 0;
+    while (<DAT>) {
+        $_ =~ s/href="\/css\//href="css\//;
+        $_ =~ s/src="\/js\//src="js\//;
+        $_ =~ s/\/Fig\/kegg2_menu.gif/images\/kegg2_menu.gif/;
+        $_ =~ s/\/kegg\/tool/http:\/\/www\.genome\.jp\/kegg\/tool/;
+
+        $tags = 1 if(! $tags && /<a name="carbohydrate">/);
+
+        if($tags &&  /href="\/kegg-bin\/show_pathway\?map=(.+?)\&amp;show_description=show"/){            
+	            my  $pathway = $1;
+	            my  ($pathway_idx) = $pathway =~/^\S+?(\d+)/;
+                if(exists $pathway_tab{ $pathway_idx } && $pathway =~ /^ko|map/){
+	            	my $number = $pathway_tab{ $pathway_idx };
+                    $_ =~ s/<\/a>/&nbsp;&nbsp;<font class="new"\> $number \<\/font\>&nbsp;&nbsp;<\/a>/;
+                    $_ =~s/href="\/kegg-bin\/show_pathway\?map=(.+?)\&amp;show_description=show"/href="pathway\/$1.html"/;
+	            }else{
+                    &format();
+                }
+        }else{
+            &format();
+        }    
+        print EXPORT $_;
+    }
+    close DAT;
+    close EXPORT;
+}
+
+sub format{
+
+    $_ =~s/\/kegg-bin/http:\/\/www\.genome\.jp\/kegg-bin/g;
+    $_ =~ s/href="\/kegg/href="http:\/\/www\.genome\.jp\/kegg/g;
+    $_ =~ s/\/kegg\/document/http:\/\/www\.genome\.jp\/kegg\/document/;  
+
+}

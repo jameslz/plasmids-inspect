@@ -1,0 +1,243 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+my ($config)        = @ARGV;
+
+my  %metadata       = ();
+profiling();
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/taxonomy};
+
+my  $runs           =  qq{$project_home/runs};
+my  $taxonomy       =  qq{$project_home/taxonomy};
+my  $report         =  qq{$project_home/report};
+my  $krona          =  qq{$project_home/krona};
+my  $stats          =  qq{$project_home/stats};
+my  $lollipop       =  qq{$project_home/lollipop};
+
+my  @samples_t      = ();
+my  @taxon_t        = qw/phylum order class family genus species/;
+my  %taxon_h        = qw/phylum p order o class c family f genus g species s p phylum  o order c class f family g genus s species/;
+
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+my  $refseq         =  qq{$metadata{project_home}/$metadata{project_id}/plasmids/refseq/report};
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+
+exit;
+
+sub submit {
+    
+    mapping_file();
+    make_fs();    
+    krona_run();
+    level_run();
+    stats_run();
+    lollipop_run();
+
+}
+
+sub profiling{
+
+  open( PROFILE,  $config )   || die "[ERR]: can't open $config. \n";
+  while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = $_ =~ /^(\S+)\s+(.+)/;
+        next if($value eq '-');
+        $metadata{$key}  = $value;
+  
+  } 
+  close PROFILE;
+
+}
+
+sub mapping_file {
+
+  open (PROFILE, qq{$metadata{mapping_file}})   || die "[ERR]: can't open $metadata{mapping_file}. \n";
+  while (<PROFILE>) {
+      
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;
+        push @samples_t , $its[0];
+      
+  }
+  close PROFILE;
+
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $krona
+                          $runs
+                          $report
+                          $taxonomy
+                          $stats
+                          $lollipop};
+    $cmd    =~ s/\n\s+/ /msg;
+    system $cmd;
+}
+
+sub krona_run {
+
+    my $sh = qq{$runs/krona.sh};
+    
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT counts_krona( $sample );
+        print EXPORT krona( $sample );
+    }
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 1 -p 1 "{}" \n} if(!$dry_run);
+
+}
+
+sub counts_krona {
+
+    my $sample  = shift;
+    my $cmd     = qq{$binaries/tabtk cut                    \
+                         -r -f4,1                           \
+                         $refseq/$sample.refseq.txt         \
+                     |tail -n +2                            \
+                     |$binaries/tsv-utils  bins             \
+                         -t 1 -s 2  -                       \
+                     |grep -v "#"                           \
+                     |$binaries/tabtk cut                   \
+                         -r -f2,1                           \
+                     |sed \'s\/,\/\t\/g\'                   \
+                     >$krona/$sample.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;                         
+    return $cmd;
+
+}
+
+sub krona {
+    
+   my $sample  =  shift;
+   return  qq{ktImportText -o $krona/$sample.html  $krona/$sample.txt,$sample ;\n};
+
+}
+
+sub level_run {
+  
+    my $sh   =  qq{$runs/level.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        foreach my $level ( @taxon_t ){
+            print EXPORT level( $sample, $level );
+            print EXPORT abundance( $sample, $level );
+        }
+    } 
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 2  -p $metadata{cpus} "{}"} if(!$dry_run);
+}
+
+sub level {
+
+    my ($sample, $level)  =  @_;
+    my $cmd    = qq{$binaries/krona-utils taxonomy   \
+                      -i -l $taxon_h{ $level }       \
+                      $krona/$sample.txt             \
+                    >$taxonomy/$sample.$level.counts.txt ;\n};
+       $cmd    =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub abundance {
+    
+    my ($sample, $level)  =  @_;
+    my $cmd   = qq{$binaries/tsv-utils abundance               \
+                     $taxonomy/$sample.$level.counts.txt       \
+                   >$taxonomy/$sample.$level.abundance.txt ;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stats_run {
+  
+    my $sh   =  qq{$runs/stats.sh};
+    open (EXPORT, ">$sh") || die "$sh $!\n";
+
+    foreach my $level ( @taxon_t ){
+        foreach my $type (qw/counts abundance/) {
+              print EXPORT stats( $level, $type );
+        }
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  -nlines 1  -p 1 "{}"} if(!$dry_run);
+}
+
+sub stats {
+
+    my $level   = shift;
+    my $type    = shift;
+    my $list    = join(" ", (map { qq{$_:$taxonomy/$_.$level.$type.txt} } @samples_t));
+    my $cmd     = qq{$binaries/tsv-utils agg  \
+                         $list                \
+                     >$stats/$level.$type.txt;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg;
+   return $cmd;
+
+}
+
+sub lollipop_run {
+
+    my $sh = qq{$runs/lollipop.sh};
+    open(EXPORT, qq{>$sh} ) || die "$!";
+
+    foreach my $sample ( @samples_t ) {
+
+        foreach my $level ( @taxon_t ) {
+            print EXPORT qq{mkdir -p $lollipop/$sample ;\n};
+            print EXPORT rank( $sample, $level );
+            print EXPORT lollipop( $sample, $level );
+            print EXPORT qq{$utils/pdf2png $lollipop/$sample/$level.pdf ;\n};
+        }
+
+    }
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v --nlines 4 -p $metadata{parallel} "{}"\n} if(!$dry_run);
+
+}
+
+sub rank{
+
+   my ($sample, $level) = @_;
+   my $cmd   = qq{$binaries/atlas-utils rank                  \
+                     -r 10   -a                               \
+                     $taxonomy/$sample.$level.abundance.txt   \
+                 >$lollipop//$sample/$level.txt ;\n};
+      $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd; 
+
+}
+
+sub lollipop {
+
+   my ($sample, $level) = @_;
+   my $cmd   = qq{$utils/lollipop.R                           \
+                     $lollipop/$sample/$level.txt             \
+                     $lollipop/$sample/$level.pdf             \
+                     $level ;\n};
+      $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd; 
+
+}

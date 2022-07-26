@@ -1,0 +1,243 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd 'abs_path';
+
+die "Usage:perl $0 <metadata>" if(@ARGV != 1);
+
+my ($config)        = @ARGV;
+
+my %metadata        = ();
+profiling();
+
+if($metadata{bmtagger} eq 'F'){
+   print STDERR "bmtagger run flag set to 'F', Skip BMTagger step.\n";
+   exit; 
+}
+
+my  $project_home   =  qq{$metadata{project_home}/$metadata{project_id}/bmtagger};
+
+my  $runs           =  qq{$project_home/runs};
+my  $report         =  qq{$project_home/report};
+my  $reads          =  qq{$project_home/reads};
+my  $decontam       =  qq{$project_home/decontam};
+my  $stats          =  qq{$project_home/stats};
+
+my  @samples_t      = ();
+
+my  $datasets       =  qq{$metadata{project_home}/$metadata{project_id}/trimming/reads};
+my  $utils          =  dirname( abs_path($0) ) . '/../../utils';
+my  $binaries       =  dirname( abs_path($0) ) . '/../../binaries';
+
+my  $pipe           =  dirname( abs_path($0) ) . '/../../thirdpart/bmtagger-kit-0.0.2';
+my  $qstats         =  qq{$datasets/../report/quality_control.stats.txt};
+
+my  $dry_run        =  0;
+    $dry_run        =  1 if(exists $metadata{dry_run} && $metadata{dry_run} eq 'T');
+
+submit();
+exit;
+
+sub submit {
+
+    mapping_file();
+    make_fs();
+    bmtagger_run();
+    counting_run();
+    qstat_run();
+    stats_run();
+
+}
+
+sub profiling {
+
+    open( PROFILE,  $config )  || die "[ERR]: can't open $config $!\n";
+    while(<PROFILE>){
+        
+        $_ =~ s/\s+$//;
+        next if(/^#/ || !/^\S+/);
+        my ($key, $value)  = split /\s+/, $_, 2;
+        $metadata{ $key } = $value;
+
+    } 
+    close PROFILE;
+
+    foreach my $db (qw/bmtagger  bmtagger_db bmtagger_threads/) {
+        if(! exists $metadata{$db}){
+            print STDERR "[ERR]: please specify the $db metadata.\n";
+            exit;
+        }
+    }
+
+}
+
+sub mapping_file {
+  
+    open (PROFILE, qq{$metadata{mapping_file}})  || die "[ERR]: can't open $metadata{mapping_file} $!\n";
+    while (<PROFILE>) {
+        
+        $_ =~ s/\s+$//;
+        next if (/^#/);
+        my @its = split /\t/,$_;
+        push @samples_t , $its[0];
+
+    }
+    close PROFILE;
+  
+}
+
+sub make_fs {
+    
+    my $cmd = qq{mkdir -p $runs      \
+                          $reads     \
+                          $decontam  \
+                          $stats     \
+                          $report};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    system $cmd;
+}
+
+sub bmtagger_run {
+
+    my $sh    =  qq{$runs/bmtagger.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  bmtagger( $sample );
+        print EXPORT  decontam( $sample );
+    }
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+}
+
+sub bmtagger {
+  
+    my  $sample = shift;   
+    my  $cmd    = qq{$pipe/bmtagger-kit                       \
+                        -l $sample                            \
+                        -d $metadata{bmtagger_db}             \
+                        -c $metadata{bmtagger_threads}        \
+                        $datasets/$sample.R1.fastq            \
+                        $datasets/$sample.R2.fastq            \
+                        $decontam/$sample ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub decontam {
+
+    my  $sample = shift;   
+    my  $cmd    = qq{mv $decontam/$sample/reads/* $reads;\n};
+    return $cmd;    
+}
+
+sub counting_run {
+
+    my $sh    =  qq{$runs/counting.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {
+        print EXPORT  counting( $sample, 'clean'  );
+        print EXPORT  counting( $sample, 'contam' );
+    }
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  --nlines 2 -p $metadata{cpus}  "{}"\n} if(!$dry_run);
+
+}
+
+sub counting {
+  
+    my  ($sample, $type) = @_;
+    my  $name   = ($type eq "clean") ? $sample : qq{$sample.contam};
+    my  $cmd    = qq{cat $reads/$name.R1.fastq        \
+                         $reads/$name.R2.fastq        \
+                    |$binaries/fastx-utils counts     \
+                        -b -l $sample   -             \
+                    >$stats/$sample.$type.txt ;\n};
+        $cmd    =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub qstat_run {    
+    
+    my $sh   =  qq{$runs/qstat.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    foreach my $sample ( @samples_t ) {        
+          print EXPORT fqchk( $sample );
+    }
+    
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs  -v --nlines 1 -p $metadata{cpus} "{}"\n} if(!$dry_run);
+
+}
+
+sub fqchk {
+    
+    my $sample  = shift;
+    my $cmd     = qq{cat $reads/$sample.R1.fastq       \
+                         $reads/$sample.R2.fastq       \
+                    |$binaries/atlas-utils fqchk       \
+                        -p                             \
+                        -q 33                          \
+                        -l $sample                     \
+                        -                              \
+                    >$report/$sample.qc.stats.txt ;\n};
+       $cmd     =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub stats_run {
+
+    my $sh    =  qq{$runs/stats.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT  agg('clean');
+    print EXPORT  agg('contam');
+    print EXPORT  summary();
+    print EXPORT  qstats();
+
+    close EXPORT;
+    system qq{cat $sh | $binaries/gargs -v  --nlines 1 -p  1 "{}"\n} if(!$dry_run);
+}
+
+sub agg {
+
+    my $type = shift;
+    my $list = join(" ",  map { qq{$stats/$_.$type.txt} } @samples_t );
+
+    my $cmd  = qq{cat $list > $stats/bmtagger.$type.txt ;\n};
+
+    return $cmd;
+
+}
+
+sub summary {
+
+    my $cmd = qq{$pipe/bmtagger_stats                   \
+                    $metadata{mapping_file}             \
+                    $qstats                             \
+                    $stats                              \
+                 >$report/bmtagger.stats.txt ;\n};
+
+    $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub qstats {
+
+    my $cmd = qq{cat $report/*.qc.stats.txt             \
+                |$binaries/tsv-utils  view -d -         \
+                |$binaries/tsv-utils reorder -          \
+                <(cut -f1  $metadata{mapping_file})     \
+                >$report/quality_control.stats.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}

@@ -1,0 +1,33 @@
+#!/usr/bin/perl  -w
+
+use strict;
+use warnings;
+
+die "Usage: perl $0  <tsv>" unless (@ARGV == 1);
+
+my ( $tsv ) = @ARGV;
+
+my %list_h       = ();
+
+
+load_tsv();
+
+
+sub load_tsv{
+
+    open ( DATA, $tsv )   || die "$!  \n";
+    while (<DATA>) {
+
+        #next if(/\>= 1000 bp/ || /\>= 0 bp/);
+
+    	if(/^# contigs/){
+    		$_ =~s/^\#\s+//;
+    		print;
+    		next;
+    	}
+    	next if(/^#/ || /^N75/ ||  /^L50/  ||  /^L75/);
+    	print;
+
+    }
+    close DATA;
+}

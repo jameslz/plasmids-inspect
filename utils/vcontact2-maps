@@ -1,0 +1,29 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+die "\nUsage: vcontact2-maps <tsv>\n\n" if(-t STDIN && @ARGV != 1);
+
+my ( $tsv ) = @ARGV;
+
+fmt();
+
+sub fmt {
+
+    my $fh;
+    ($tsv eq "-") ? ($fh = 'STDIN') :
+                    (open( $fh,  $tsv )  || die "[ERR]: can't open file <$tsv>. \n");
+    
+    print qq{protein_id,contig_id,keywords\n};
+
+    while(<$fh>){
+       chomp;
+       my @t = split /\t/, $_;
+       print qq{$t[1],$t[0],None\n};
+    } 
+
+    close $fh;
+    
+
+}
