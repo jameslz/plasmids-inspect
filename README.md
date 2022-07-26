@@ -10,7 +10,7 @@ We used PlasForest[12] a homology-based random-forest classifier and PlasClass (
 
 All clean reads were aligned to assembled contigs and predicted ORF with Bowtie2 (parameter: --end-to-end --sensitive -I 200 -X 400), ORFs were quantified with transcripts per million (TPM), TPM is calculated as:
 
-![TPM](./image/TPM.png)
+![TPM](./images/TPM.png)
 
 where Ng is the read count, the reads number mapped to the g gene, and Lg is the gene length. The index j stands for the set of all predicted gene in sample, and g is an index indicating a particular gene.
 
